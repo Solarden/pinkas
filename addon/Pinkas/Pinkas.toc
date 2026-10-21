@@ -1,0 +1,13 @@
+## Interface: 16001
+## Title: Pinkas
+## Notes: Keeps a ledger of your characters (bags, professions, rested XP, gameplay events) and fills mails for your alts
+## SavedVariables: PinkasDB
+Core.lua
+Json.lua
+State.lua
+Bank.lua
+Mailbox.lua
+Events.lua
+Totals.lua
+Routes.lua
+Export.lua

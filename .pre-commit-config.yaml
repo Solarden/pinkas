@@ -13,3 +13,5 @@ repos:
         args: ['--maxkb=5000']
       - id: check-merge-conflict
       - id: check-yaml
+      - id: no-commit-to-branch
+        args: [--branch, main]
