@@ -39,8 +39,13 @@ def test_escapes_are_bytes():
         (b'["export"] = "{}" .. x,\r\n', "unexpected text"),
         (b'["export"] = "\xff",\r\n', "UTF-8"),
         (b'["export"] = "{}\r\n', "not closed"),
+        (b'["export"] = "{\\"v\\":NaN}",\r\n', "NaN or Infinity"),
+        (b'["export"] = "' + b"[" * 100000 + b'",\r\n', "nested too deeply"),
     ],
-    ids=["too big", "no export", "two exports", "bad escape", "ddd over 255", "bad JSON", "trailing text", "bad UTF-8", "unclosed"],
+    ids=[
+        "too big", "no export", "two exports", "bad escape", "ddd over 255", "bad JSON", "trailing text",
+        "bad UTF-8", "unclosed", "NaN", "deep nesting",
+    ],
 )
 def test_a_broken_file_is_refused(body, message):
     with pytest.raises(ParseError, match=message):
@@ -50,6 +55,7 @@ def test_a_broken_file_is_refused(body, message):
 def changed(edit) -> bytes:
     export = account()
     edit(export, export["chars"][KEY])
+
     return with_export(export)
 
 
@@ -64,8 +70,15 @@ def changed(edit) -> bytes:
         (lambda e, c: c["bags"][1].update(count=True), r"chars\[0\]\.bags\[1\]\.count: expected int"),
         (lambda e, c: c.update(events=[{"id": 1, "at": 1, "kind": "kill", "value": {}}]), "unknown kind"),
         (lambda e, c: c.update(name="Other"), "not realm/name"),
+        (
+            lambda e, c: c.update(totals=[{"session": 1, "kind": "gold", "key": "loot", "value": {}}] * 2),
+            "appears twice",
+        ),
     ],
-    ids=["version", "missing key", "extra key", "string level", "int bool", "bool count", "unknown kind", "key mismatch"],
+    ids=[
+        "version", "missing key", "extra key", "string level", "int bool", "bool count", "unknown kind",
+        "key mismatch", "duplicate total",
+    ],
 )
 def test_the_contract_is_enforced(edit, message):
     with pytest.raises(ParseError, match=message):

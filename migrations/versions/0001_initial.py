@@ -76,7 +76,7 @@ def upgrade() -> None:
         sa.Column("since", TS, nullable=False),
         sa.CheckConstraint("id", name="pinkas_pull_state_one_row"),
         sa.CheckConstraint(
-            "status IN ('ok', 'asleep-skipped', 'source-failed', 'parse-failed', 'too-large')",
+            "status IN ('ok', 'source-failed', 'parse-failed', 'too-large')",
             name="pinkas_pull_state_status_check",
         ),
     )
