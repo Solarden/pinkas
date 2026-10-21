@@ -1,0 +1,28 @@
+# A throwaway Postgres for the test suite, the same major as the server's. Data lives on tmpfs and dies
+# with the container.
+#
+#   docker compose -f docker-compose.test.yml up -d --wait
+#   docker compose -f docker-compose.test.yml down
+
+# Its own project name, so a `down --remove-orphans` elsewhere never takes it along.
+name: pinkas-test
+
+services:
+  test-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: pinkas_test
+      POSTGRES_USER: pinkas_test
+      POSTGRES_PASSWORD: pinkas_test
+    ports:
+      # Loopback only, and a port no other project's test database uses.
+      - "127.0.0.1:55434:5432"
+    tmpfs:
+      # postgres:18 keeps PGDATA one level below this.
+      - /var/lib/postgresql
+    healthcheck:
+      # TCP, not the socket: the socket also answers during the entrypoint's temporary server.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U pinkas_test -d pinkas_test"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
