@@ -192,10 +192,10 @@ local function makeEnv()
     return "1.60.1", "70450", "Oct 1 2026", 16001
   end
   e.UnitClass = function()
-    return "Shaman", "SHAMAN"
+    return "Rogue", "ROGUE"
   end
   e.UnitRace = function()
-    return "Troll", "Troll"
+    return "Orc", "Orc"
   end
   e.UnitLevel = function()
     return world.level
@@ -257,7 +257,8 @@ local function makeEnv()
     end,
     GetContainerItemInfo = function(bag, slot)
       local slots = world.bags[bag] or world.bank[bag]
-      return slots and slots[slot]
+      -- `false` in a stub bag is an empty slot, which the game reads as nil.
+      return slots and slots[slot] or nil
     end,
     PickupContainerItem = function(bag, slot)
       world.cursor = world.bags[bag][slot]
@@ -463,17 +464,22 @@ test("a real logout exports the cache, not the emptied unit", function()
         itemID = 2318,
         stackCount = 11,
         itemName = "Light Leather",
+        quality = 1,
         hyperlink = "|cffffffff|Hitem:2318::|h[Light Leather]|h|r",
       },
+      false,
     },
+    [1] = { false, false },
   }
   load(nil)
   login(true)
   local export = logoutAndExport()
-  assert(export.v == 2 and export.build == "1.60.1.70450", "contract version and game build")
+  assert(export.v == 3 and export.build == "1.60.1.70450", "contract version and game build")
   local c = me(export)
   assert(c.xp == 1664 and c.xp_max == 7600 and c.money == 1000, "cache kept")
   assert(c.bags[1].id == 2318 and c.bags[1].count == 11 and c.bags[1].name == "Light Leather")
+  assert(c.bags[1].quality == 1 and c.bags[1].class == 7 and c.bags[1].subclass == 6)
+  assert(#c.bags == 1 and c.bag_slots == 4, "one item, four slots")
   assert(c.logout_at == world.now and c.rested == 892 and c.resting == true)
   assert(c.professions[1].skill_line == 393 and c.professions[1].rank == 75)
 end)
@@ -553,6 +559,7 @@ test("mail is recorded only to the account's own characters", function()
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
   assert(#events == 1 and events[1].kind == "mail" and events[1].value.to == "Testrealm/Altname")
   world.inbox = { { sender = "Stranger", money = 0, items = {} }, { sender = "Altname", money = 5, items = {} } }
+  fire("MAIL_SHOW")
   fire("MAIL_INBOX_UPDATE")
   local mails = env.PinkasDB.chars["Testrealm/Testchar"].mailbox.mails
   assert(mails[1].from == "other" and mails[2].from == "Testrealm/Altname")
@@ -564,6 +571,24 @@ test("mail is recorded only to the account's own characters", function()
   fire("MAIL_INBOX_UPDATE")
   local from = env.PinkasDB.chars["Testrealm/Testchar"].mailbox.mails[1].from
   assert(from == "Other Realm/Farmer", "another realm is written without its spaces")
+end)
+
+test("the inbox is read only at a mailbox, so an update elsewhere keeps the last capture", function()
+  newWorld()
+  load(nil)
+  login(true)
+  world.inbox = { { sender = "Stranger", money = 7, items = {} } }
+  fire("MAIL_INBOX_UPDATE")
+  assert(env.PinkasDB.chars["Testrealm/Testchar"].mailbox == nil, "no mailbox open")
+  fire("MAIL_SHOW")
+  fire("MAIL_INBOX_UPDATE")
+  local captured = env.PinkasDB.chars["Testrealm/Testchar"].mailbox
+  fire("MAIL_CLOSED")
+  world.inbox = {}
+  world.now = world.now + 60
+  fire("MAIL_INBOX_UPDATE")
+
+  assert(env.PinkasDB.chars["Testrealm/Testchar"].mailbox == captured and #captured.mails == 1)
 end)
 
 test("a secret XP read in combat keeps the cache and books no rested", function()
@@ -823,7 +848,7 @@ test("event ids grow, the list is capped, exported_at is set", function()
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
   assert(#events == 3 and events[1].id == 3 and events[3].id == 5)
   local export = logoutAndExport()
-  assert(export.exported_at == world.now and export.v == 2)
+  assert(export.exported_at == world.now and export.v == 3)
 end)
 
 -- Dungeons and bank ------------------------------------------------------------------------------
@@ -851,12 +876,42 @@ end)
 
 test("the bank is read from the tab containers, never the keyring", function()
   newWorld()
-  world.bank = { [6] = { { itemID = 2318, stackCount = 4 } }, [-1] = { { itemID = 9999, stackCount = 1 } } }
+  world.bank = {
+    [6] = { { itemID = 2318, stackCount = 4 }, false },
+    [7] = { false },
+    [-1] = { { itemID = 9999, stackCount = 1 } },
+  }
   load(nil)
   login(true)
   fire("BANKFRAME_OPENED")
   local bank = env.PinkasDB.chars["Testrealm/Testchar"].bank
   assert(#bank.items == 1 and bank.items[1].id == 2318 and bank.as_of == world.now)
+  assert(bank.slots == 3, "both tabs' slots, not the keyring's")
+end)
+
+test("a session without a bank or mailbox visit exports the last ones", function()
+  newWorld()
+  world.bank = { [6] = { { itemID = 2318, stackCount = 4 } } }
+  world.inbox = { { sender = "Stranger", money = 0, items = {} } }
+  load(nil)
+  login(true)
+  fire("BANKFRAME_OPENED")
+  fire("BANKFRAME_CLOSED")
+  fire("MAIL_SHOW")
+  fire("MAIL_INBOX_UPDATE")
+  fire("MAIL_CLOSED")
+  local seen = world.now
+  logoutAndExport()
+  world.now = world.now + 86400
+  world.bank, world.inbox = {}, {}
+  load(env.PinkasDB)
+  login(true)
+  fire("BAG_UPDATE_DELAYED")
+  fire("MAIL_INBOX_UPDATE")
+  local c = me(logoutAndExport())
+
+  assert(c.bank.as_of == seen and #c.bank.items == 1 and c.bank.items[1].count == 4)
+  assert(c.mailbox.as_of == seen and #c.mailbox.mails == 1)
 end)
 
 test("two levels before one /played answer are two events, their times unknown", function()
@@ -891,7 +946,7 @@ test("a damaged SavedVariables file starts empty instead of breaking the addon",
     login(true)
     assert(type(env.PinkasDB.chars["Testrealm/Testchar"]) == "table")
     fire("PLAYER_LOGOUT")
-    assert(env.PinkasDB.export:find('"v":2', 1, true), "the export still works")
+    assert(env.PinkasDB.export:find('"v":3', 1, true), "the export still works")
   end
 end)
 
@@ -907,6 +962,20 @@ test("a damaged character entry is rebuilt, the rest is kept", function()
   local c = env.PinkasDB.chars["Testrealm/Testchar"]
   assert(type(c.events) == "table" and type(c.totals) == "table" and c.nextEventId == 1)
   assert(env.PinkasDB.chars["Testrealm/Alt"].name == "Alt")
+end)
+
+test("an alt cached by an older addon exports its missing item fields and slot totals as null", function()
+  newWorld()
+  local old = { id = 2589, name = "Linen Cloth", count = 20 }
+  load({
+    chars = {
+      ["Testrealm/Alt"] = { name = "Alt", realm = "Testrealm", bags = { old }, bank = { as_of = 1, items = { old } } },
+    },
+  })
+  login(true)
+  local alt = logoutAndExport().chars["Testrealm/Alt"]
+  assert(alt.bag_slots == "<null>" and alt.bank.slots == "<null>")
+  assert(alt.bags[1].quality == "<null>" and alt.bank.items[1].class == "<null>" and alt.bags[1].subclass == "<null>")
 end)
 
 test("a damaged alt is left out of the export, the others still go", function()
@@ -967,7 +1036,7 @@ end
 local function fullCharacter(n)
   local items = {}
   for i = 1, 12 do
-    items[i] = { id = 4304, name = "Thick Leather", count = 20 }
+    items[i] = { id = 4304, name = "Thick Leather", count = 20, quality = 1, class = 7, subclass = 6 }
   end
   local events = {}
   for i = 1, ns.EVENT_CAP do
@@ -1003,10 +1072,10 @@ local function fullCharacter(n)
   end
   local bags, bank, mails = {}, {}, {}
   for i = 1, 120 do
-    bags[i] = { id = 4304, name = "Thick Leather", count = 20 }
+    bags[i] = items[1]
   end
   for i = 1, 9 * 36 do
-    bank[i] = { id = 4304, name = "Thick Leather", count = 20 }
+    bank[i] = items[1]
   end
   for i = 1, 50 do
     mails[i] = { from = "other", money = 100, items = { items[1] } }
@@ -1022,7 +1091,7 @@ local function fullCharacter(n)
   return {
     name = "Alt" .. n,
     realm = "Testrealm",
-    class = "SHAMAN",
+    class = "ROGUE",
     race = "Orc",
     level = 60,
     xp = 0,
@@ -1037,7 +1106,8 @@ local function fullCharacter(n)
     played = { total = 1, level = 1, at = 1 },
     professions = {},
     bags = bags,
-    bank = { as_of = world.now, items = bank },
+    bag_slots = 120,
+    bank = { as_of = world.now, slots = 9 * 36, items = bank },
     mailbox = { as_of = world.now, mails = mails },
     events = events,
     totals = totals,

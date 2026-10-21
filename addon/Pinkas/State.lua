@@ -12,19 +12,30 @@ function ns.position(target)
   target.y = pos and plain(pos.y) or nil
 end
 
+-- Returns the items, one per used slot, and the containers' slot total.
 function ns.readContainers(ids)
-  local items = {}
+  local items, total = {}, 0
   for _, bag in ipairs(ids) do
     local ok, slots = pcall(C_Container.GetContainerNumSlots, bag)
-    for slot = 1, (ok and slots or 0) do
+    slots = ok and slots or 0
+    total = total + slots
+    for slot = 1, slots do
       local info = C_Container.GetContainerItemInfo(bag, slot)
       if info and info.itemID then
-        items[#items + 1] = { id = info.itemID, name = info.itemName, count = info.stackCount or 1 }
+        local _, _, _, _, _, class, subclass = C_Item.GetItemInfoInstant(info.itemID)
+        items[#items + 1] = {
+          id = info.itemID,
+          name = info.itemName,
+          count = info.stackCount or 1,
+          quality = info.quality,
+          class = class,
+          subclass = subclass,
+        }
       end
     end
   end
 
-  return items
+  return items, total
 end
 
 -- Backpack, the four bag slots and the reagent bag (Enum.BagIndex 0..5 in Forever).
@@ -94,7 +105,7 @@ local function refreshBags()
   if ns.leaving then
     return
   end
-  ns.char.bags = ns.readContainers(ns.BAGS)
+  ns.char.bags, ns.char.bag_slots = ns.readContainers(ns.BAGS)
 end
 
 local function refreshAll()

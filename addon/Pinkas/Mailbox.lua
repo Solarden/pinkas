@@ -1,6 +1,21 @@
 local _, ns = ...
 
+local open = false
+
+ns.on("MAIL_SHOW", function()
+  open = true
+end)
+
+ns.on("MAIL_CLOSED", function()
+  open = false
+end)
+
+-- Read only at a mailbox: an update away from one (another addon's CheckInbox) would store an empty
+-- inbox over the last capture. TODO(beta): whether the event fires away from a mailbox at all.
 ns.on("MAIL_INBOX_UPDATE", function()
+  if not open then
+    return
+  end
   local mails = {}
   for i = 1, GetInboxNumItems() do
     local _, _, sender, _, money = GetInboxHeaderInfo(i)

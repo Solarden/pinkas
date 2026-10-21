@@ -1,34 +1,56 @@
 {% extends "base.html" %}
+{% from "macros.html" import stats, prof %}
 {% block main %}
-{% if playing %}
-<section class="panel">
-<h2>Playing {{ playing.name }}: mail</h2>
-{% if routes %}<ul class="plain">{% for kind, recipient in routes %}<li>{{ kind }} → {{ recipient }}</li>{% endfor %}</ul>
-{% else %}<p class="muted">No route to another character. Set one in game: /pinkas route &lt;kind&gt; &lt;Name&gt;</p>{% endif %}
+<h1 class="sr">Characters</h1>
+{% if characters %}
+<div class="overview">
+<details class="panel account" open>
+<summary><h2><span>Account</span><span class="sr">: </span><span class="gold">{{ account.gold|gold }}</span></h2></summary>
+<div class="professions">{% for p in account.professions %}
+<div><span class="label">{{ p.name }}</span>{% for e in p.characters %}{{ prof(e, e.character, "/c/" ~ e.realm|pathpart ~ "/" ~ e.character|pathpart) }}{% endfor %}</div>{% endfor %}
+</div>
+</details>
+{% if plan or routes %}
+<section class="panel mail">
+<h2>Mail plan · slots to send</h2>
+{% if plan %}<ul class="plain plan">{% for line in plan %}<li><span class="n"><a href="/c/{{ line.character.realm|pathpart }}/{{ line.character.name|pathpart }}">{{ line.character.name }}</a>{% if line.character.playing %} <span class="muted">· playing</span>{% endif %}</span><span class="muted"><span aria-hidden="true">→ </span><span class="sr">mail </span>{% for to, who, n in line.sends %}{% if who %}<a href="/c/{{ who.realm|pathpart }}/{{ who.name|pathpart }}">{{ to }}</a>{% else %}{{ to }}{% endif %} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}<span class="sr"> slots</span></span></li>{% endfor %}</ul>
+{% else %}<p class="muted note">Nothing to mail: no routed materials in bags or banks.</p>{% endif %}
+<span class="label">Routes</span>
+{% if routes %}<p class="muted routes note">{% for kind, to in routes %}<span>{{ kind }} → {{ to }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>
+{% else %}<p class="muted note">None set. In game: /pinkas route &lt;kind&gt; &lt;Name&gt;</p>{% endif %}
 </section>
 {% endif %}
+</div>
+
+<div class="tools" id="card-tools" hidden>
+<label>Sort <select id="sort"><option value="">my order</option><option value="rested">most rested</option><option value="level">level</option><option value="seen">recently played</option><option value="name">name</option></select></label>
+<label>Filter <input id="filter" type="search" placeholder="name, role, profession"></label>
+<p id="card-count" class="muted" aria-live="polite"></p>
+</div>
+<script type="application/json" id="cards">{{ cards|tojson }}</script>
+
+<div class="chars">
 {% for c in characters %}
-<article class="panel char{% if c.playing %} playing{% endif %}">
+<article class="panel char{% if c.playing %} playing{% endif %}" id="c{{ c.id }}">
 <div class="top">
-  <div class="who"><a class="name" href="/c/{{ c.realm|pathpart }}/{{ c.name|pathpart }}">{{ c.name }}</a>
-    <span class="muted">{{ c.level if c.level is not none else "?" }} {{ (c.class or "")|title }} · {{ c.realm }}</span></div>
-  <form method="post" action="/playing"><input type="hidden" name="t" value="{{ token }}"><input type="hidden" name="character" value="{% if not c.playing %}{{ c.id }}{% endif %}"><button class="quiet" aria-label="{{ 'Stop playing' if c.playing else 'Play' }} {{ c.name }}">{{ "Stop" if c.playing else "Play" }}</button></form>
+<div class="who"><h2 class="cname"><a class="name" href="/c/{{ c.realm|pathpart }}/{{ c.name|pathpart }}">{{ c.name }}</a></h2>{% if c.playing %}<span class="pill now">playing</span>{% elif c.id == next_up %}<span class="pill pos">next up</span>{% endif %}<span class="sub">{{ c.level if c.level is not none else "?" }} {{ (c.class or "")|title }} · {{ c.realm }}{% if c.role %} · {{ c.role }}{% endif %}</span></div>
+<form method="post" action="/playing"><input type="hidden" name="t" value="{{ token }}"><input type="hidden" name="character" value="{% if not c.playing %}{{ c.id }}{% endif %}"><button class="quiet" aria-label="{{ 'Stop playing' if c.playing else 'Play' }} {{ c.name }}">{{ "Stop" if c.playing else "Play" }}</button></form>
 </div>
 <div class="facts">
-  <div><span class="label">rested</span>
-    {% if c.level is not none and c.level >= rested.max_level %}—
-    {% elif c.rested is none %}?
-    {% else %}<meter min="0" max="{{ c.cap }}" value="{{ c.rested }}" aria-label="rested XP of {{ c.name }}"></meter>
-      {{ c.bar_pct }}% of a level{% if c.playing %}, playing{% elif c.full_in == 0 %}, full{% elif c.full_in is not none %}, full in {{ c.full_in|duration }}{% endif %}
-    {% endif %}</div>
-  <div><span class="label">professions</span>
-    {% for p in c.professions %}{{ p.name or "?" }} {{ p.rank if p.rank is not none else "?" }}/{{ p.max if p.max is not none else "?" }}{% if p.target %} → {{ p.target }}{% endif %}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}</div>
-  <div><span class="label">gold</span>{{ c.money|gold }}</div>
-  <div><span class="label">last seen</span>{% if c.playing %}playing{% else %}<span title="{{ c.logout_at|local }}">{{ c.logout_at|ago }}</span>{% endif %}</div>
+<div>
+{{ stats(c) }}
 </div>
+<div><span class="label">Professions</span>
+{% for p in c.professions|rejectattr("secondary") %}{{ prof(p, c.name) }}{% else %}<span class="muted">—</span>{% endfor %}</div>
+<div class="sec"><span class="label">Secondary</span>
+{% for p in c.professions|selectattr("secondary") %}{{ prof(p, c.name) }}{% else %}<span class="muted">—</span>{% endfor %}</div>
+</div>
+<div class="foot"><span>Gold <b>{{ c.money|gold }}</b></span><span>Bags <b{% if c.slots.level %} class="{{ c.slots.level }}"{% endif %}>{{ c.slots.used }}{% if c.slots.total %}/{{ c.slots.total }}{% endif %}</b></span>{% if c.playing %}<span><b>Playing now</b></span>{% else %}<span>Last seen <b title="{{ c.logout_at|local }}">{{ c.logout_at|ago }}</b></span>{% endif %}</div>
 </article>
+{% endfor %}
+</div>
 {% else %}
 <p class="muted">No characters yet. One appears after its first logout with the addon has been pulled.</p>
-{% endfor %}
+{% endif %}
 {% endblock %}
 {% block nerd_more %}<dt>Well Rested rank</dt><dd>{% for c in characters %}{{ c.name }} {{ c.well_rested_rank }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</dd>{% endblock %}

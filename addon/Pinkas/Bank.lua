@@ -20,7 +20,8 @@ local function read()
   if not open or ns.leaving then
     return
   end
-  ns.char.bank = { as_of = time(), items = ns.readContainers(tabIds()) }
+  local items, slots = ns.readContainers(tabIds())
+  ns.char.bank = { as_of = time(), slots = slots, items = items }
 end
 
 ns.on("BANKFRAME_OPENED", function()

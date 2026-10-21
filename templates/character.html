@@ -1,18 +1,56 @@
 {% extends "base.html" %}
+{% from "macros.html" import stats, prof, as_of, name %}
 {% block title %}{{ c.name }} — pinkas{% endblock %}
-{% macro items(list) %}<ul class="plain">{% for it in list %}<li>{{ it.name or "item " ~ it.id }}<span class="count">{{ it.count }}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>{% endmacro %}
+{% macro items(list) %}<ul class="plain">{% for it in list %}<li>{{ name(it) }}<span class="count">{{ it.count }}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>{% endmacro %}
+{% macro groups(list) %}{% for g in list %}<div class="group"><span class="label"><span>{{ g.label }}{% if g.who %} <a href="/c/{{ c.realm|pathpart }}/{{ g.who|pathpart }}">{{ g.to }}</a>{% elif g.to %} {{ g.to }}{% endif %}</span><span>{{ g.slots }} slot{% if g.slots != 1 %}s{% endif %}</span></span>
+{{ items(g["items"]) }}</div>{% else %}<p class="muted note">empty</p>{% endfor %}{% endmacro %}
+{% macro used(s) %}<span class="sr">, </span><span class="count">{{ s.used }}{% if s.total %}/{{ s.total }}{% endif %} slots</span>{% endmacro %}
+{% macro slots(s, what) %}{% if s.total %}<meter class="slots" min="0" max="{{ s.total }}" low="{{ s.low }}" high="{{ s.high }}" optimum="0" value="{{ s.used }}" aria-label="{{ what }} slots used: {{ s.used }} of {{ s.total }}"></meter>{% endif %}{% endmacro %}
 {% block main %}
-<h2>{{ c.name }} · {{ c.realm }}</h2>
-<p class="muted">Level {{ data.level if data.level is not none else "?" }} {{ (data.class or "")|title }}, {{ data.zone or "somewhere" }}, {{ data.money|gold }}.
+<div class="title">
+<h1>{{ c.name }}</h1>
+<p class="muted">{{ c.realm }}{% if c.role %} · {{ c.role }}{% endif %} · Level {{ data.level if data.level is not none else "?" }} {{ (data.class or "")|title }}, {{ data.zone or "somewhere" }}, {{ data.money|gold }}.
 {% if c.playing %}Playing now.{% else %}Last seen <span title="{{ c.logout_at|local }}">{{ c.logout_at|ago }}</span>.{% endif %}</p>
-<section class="panel"><h2>Professions</h2>
-<ul class="plain">{% for p in data.professions %}<li>{{ p.name or "?" }}<span class="count">{{ p.rank if p.rank is not none else "?" }}/{{ p.max if p.max is not none else "?" }}</span></li>{% else %}<li class="muted">none</li>{% endfor %}</ul></section>
-<section class="panel"><h2>Bags</h2>{{ items(bags) }}</section>
-<section class="panel"><h2>Bank{% if data.bank %}, as of <span title="{{ data.bank.as_of|epoch|local }}">{{ data.bank.as_of|epoch|ago }}</span>{% endif %}</h2>
-{% if bank is not none %}{{ items(bank) }}{% else %}<p class="muted">Not seen yet: open the bank in game.</p>{% endif %}</section>
-<section class="panel"><h2>Mailbox{% if data.mailbox %}, as of <span title="{{ data.mailbox.as_of|epoch|local }}">{{ data.mailbox.as_of|epoch|ago }}</span>{% endif %}</h2>
-{% if data.mailbox %}<ul class="plain">{% for m in data.mailbox.mails %}<li>from {{ m.from }}{% if m.money %}, {{ m.money|gold }}{% endif %}{% for it in m["items"] %}{% if loop.first %}: {% endif %}{{ it.name or "item " ~ it.id }} ×{{ it.count }}{% if not loop.last %}, {% endif %}{% endfor %}</li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>
-{% else %}<p class="muted">Not seen yet: open the mailbox in game.</p>{% endif %}</section>
+</div>
+
+<div class="with-side">
+<div class="cols">
+<section class="panel">
+<h2>Next level</h2>
+{{ stats(c) }}
+</section>
+
+<section class="panel">
+<h2>Professions</h2>
+{% for p in c.professions|rejectattr("secondary") %}{{ prof(p, c.name) }}{% else %}{% if not planned %}<p class="muted note">none</p>{% endif %}{% endfor %}
+{% for p in planned %}<div class="prof"><span class="n">{{ p.name }}</span><span class="note">planned, not learned · up to {{ p.upto }}</span></div>{% endfor %}
+{% if c.professions|selectattr("secondary")|list %}<h2 class="sub">Secondary</h2>
+{% for p in c.professions|selectattr("secondary") %}{{ prof(p, c.name) }}{% endfor %}{% endif %}
+<p class="muted note set"><a href="/settings">Set targets</a></p>
+</section>
+
+<section class="panel">
+<h2 class="head"><span>Bags</span>{{ used(bag_slots) }}</h2>
+{{ slots(bag_slots, "Bag") }}
+{{ groups(bags) }}
+</section>
+
+<section class="panel">
+{% if bank is not none %}<h2 class="head"><span>Bank, as of {{ as_of(data.bank.as_of|epoch) }}</span>{{ used(bank_slots) }}</h2>
+{{ slots(bank_slots, "Bank") }}
+{{ groups(bank) }}{% else %}<h2>Bank</h2>
+<p class="muted note">Not seen yet: open the bank in game.</p>{% endif %}
+</section>
+
+<section class="panel">
+<h2>Mailbox{% if data.mailbox %}, as of {{ as_of(data.mailbox.as_of|epoch) }}{% endif %}</h2>
+{% if data.mailbox %}<ul class="plain">{% for m in data.mailbox.mails %}<li><span class="n">from {{ m.from }}:{% if m.money %} {{ m.money|gold }}{% if m["items"] %},{% endif %}{% endif %}{% for it in m["items"] %} {{ name(it) }} ×{{ it.count }}{% if not loop.last %},{% endif %}{% endfor %}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>
+{% else %}<p class="muted note">Not seen yet: open the mailbox in game.</p>{% endif %}
+</section>
+</div>
+
+{% if html is not none %}<details class="panel side" open><summary>Guide</summary>{% include "_guide.html" %}</details>{% endif %}
+</div>
 {% endblock %}
 {% block nerd_more %}<dt>Well Rested rank</dt><dd>{{ c.well_rested_rank }}</dd>{% endblock %}
-{% block nerd_raw %}<p>Newest snapshot, logged out {{ c.logout_at|local }}:</p><pre>{{ raw }}</pre>{% endblock %}
+{% block nerd_raw %}<p>Newest snapshot, logged out {{ c.logout_at|local }}:</p><pre class="panel">{{ raw }}</pre>{% endblock %}

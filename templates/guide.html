@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}guide — pinkas{% endblock %}
+{% block main_class %} class="read"{% endblock %}
+{% block main %}
+{% if html is not none %}
+{% if "<h1" not in html %}<h1 class="sr">Guide</h1>{% endif %}
+<div class="panel">{% include "_guide.html" %}</div>
+{% else %}<h1 class="sr">Guide</h1>
+<p class="muted">{{ message }}</p>{% endif %}
+{% endblock %}

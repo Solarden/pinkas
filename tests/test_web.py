@@ -1,10 +1,13 @@
 import copy
 import http.client
 import http.server
+import json
+import re
 import socket
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import quote, urlencode
 
@@ -14,7 +17,7 @@ import pytest
 from pinkas import web
 from pinkas.ingest import ingest
 from tests.db import DSN
-from tests.files import KEY, account, fixture, with_export
+from tests.files import KEY, account, account_v3, fixture, with_export
 
 PASSWORD = "correct horse"
 CONF = web.Config(DSN, "test-secret", web.hash_password(PASSWORD))
@@ -85,7 +88,9 @@ def client(conn, monkeypatch):
     server.conf = CONF
     # A short poll, so shutdown() doesn't wait the default half second per test.
     threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
-    yield Client(server.server_address[1])
+    client = Client(server.server_address[1])
+    client.server = server
+    yield client
     server.shutdown()
     server.server_close()
 
@@ -198,6 +203,10 @@ def test_a_forged_cookie_with_the_right_secret_works(client, conn):
         ("/c/a/b\r\nSet-Cookie: x=1", "/"),
         ("/c/a", "/"),
         ("/elsewhere", "/"),
+        ("/search", "/search"),
+        ("/guide", "/guide"),
+        ("/settings", "/settings"),
+        ("/settingsx", "/"),
     ],
 )
 def test_safe_next(target, expected):
@@ -285,19 +294,22 @@ def test_an_unknown_character_cannot_play(logged_in, conn, owner, chosen):
     assert playing(owner) == []
 
 
-def test_the_playing_character_sits_on_top_with_its_mail(logged_in, conn, owner):
+PLAYING = '<span class="pill now">playing</span>'
+
+
+def test_the_playing_character_sits_on_top(logged_in, conn, owner):
     export = with_alt()
     # Days since the logout would have built rested, but the playing character is online.
     export["chars"][KEY].update(rested=0, logout_at=export["chars"][KEY]["logout_at"] - 3 * 86400)
-    export["routes"] = {"herb": "Altchar", "cloth": "Fakechar-Testrealm", "ore": "Otheralt"}
     store(conn, export)
     logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Fakechar"]})
     body = logged_in.get("/").body
 
-    assert body.index("Playing Fakechar") < body.index(">Fakechar<") < body.index(">Altchar<"), "by name, Altchar leads"
-    assert "herb → Altchar" in body and "ore → Otheralt" in body
-    assert "cloth →" not in body, "a route to the playing character itself is hidden"
-    assert "0% of a level, playing" in body
+    assert body.count(PLAYING) == 1
+    assert body.index('class="name" href="/c/Testrealm/Fakechar"') < body.index('class="name" href="/c/Testrealm/Altchar"'), (
+        "by name, Altchar leads"
+    )
+    assert "0% of a level · playing" in body and "<b>Playing now</b>" in body
 
 
 def set_playing_since(owner, name: str, sql_time: str) -> None:
@@ -310,21 +322,22 @@ def test_playing_ends_after_twelve_hours(logged_in, conn, owner):
     store(conn, with_alt(session_started_at=account()["chars"][KEY]["session_started_at"] - 3 * 86400))
     set_playing_since(owner, "Fakechar", "now() - interval '13 hours'")
 
-    assert "Playing" not in logged_in.get("/").body
+    assert PLAYING not in logged_in.get("/").body
     set_playing_since(owner, "Fakechar", "now() - interval '11 hours'")
-    assert "Playing Fakechar" in logged_in.get("/").body
+
+    assert PLAYING in logged_in.get("/").body
 
 
 def test_playing_ends_when_another_character_starts_a_session(logged_in, conn, owner):
     store(conn, with_alt())
     logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Fakechar"]})
-    assert "Playing Fakechar" in logged_in.get("/").body
+    assert PLAYING in logged_in.get("/").body
     later = int(time.time()) + 60
     export = with_alt(session_started_at=later, logout_at=later + 600)
     export["exported_at"] = later + 600
     store(conn, export)
 
-    assert "Playing" not in logged_in.get("/").body
+    assert PLAYING not in logged_in.get("/").body
 
 
 # Pages -------------------------------------------------------------------------------------------
@@ -335,8 +348,9 @@ def test_the_list_shows_every_character(logged_in, conn):
     body = logged_in.get("/").body
 
     assert ">Fakechar<" in body and ">Altchar<" in body
-    assert 'aria-label="Play Altchar"' in body and 'aria-label="rested XP of Altchar"' in body
-    assert "10g 16s 94c" in body and "Skinning 75/75" in body and "% of a level" in body
+    assert 'aria-label="Play Altchar"' in body and 'aria-label="Rested XP of Altchar"' in body
+    assert "Gold <b>10g 16s 94c</b>" in body and "% of a level" in body
+    assert '<span class="n">Skinning</span><span class="count">75/75 · train</span>' in body
 
 
 def test_an_empty_database_renders(logged_in):
@@ -354,9 +368,9 @@ def test_a_character_page_sums_stacks_and_dates_bank_and_mail(logged_in, conn):
     store(conn, export)
     body = logged_in.get("/c/Testrealm/Fakechar").body
 
-    assert "Linen Cloth<span class=\"count\">32</span>" in body, "20 + 12 in the bags"
-    assert "Linen Cloth<span class=\"count\">5</span>" in body
-    assert body.count(", as of") == 2 and "from Altchar, 0g 5s 0c" in body
+    assert '<span class="n">Linen Cloth</span><span class="count">32</span>' in body, "20 + 12 in the bags"
+    assert '<span class="n">Linen Cloth</span><span class="count">5</span>' in body
+    assert body.count(", as of") == 2 and '<span class="n">from Altchar: 5s</span>' in body
 
 
 def test_a_character_without_bank_or_mail_says_so(logged_in, conn):
@@ -394,9 +408,11 @@ def test_an_unknown_page_is_404(logged_in, conn, path):
 
 def test_the_nerd_panel_shows_after_login(logged_in, conn):
     ingest(conn, fixture("fake_account.lua"), FETCHED)
-    index, character, missing = (logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing"))
+    index, character, missing, *others = (
+        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide", "/settings")
+    )
 
-    for response in (index, character, missing):
+    for response in (index, character, missing, *others):
         assert NERD in response.body
 
     assert "1.60.1.70450" in index.body and "Fakechar 0" in index.body
@@ -412,16 +428,22 @@ def test_the_nerd_panel_is_never_shown_before_login(client, conn):
         client.get("/c/Testrealm/Fakechar"),
         client.post("/playing", {"t": TOKEN, "character": ""}),
         client.post("/logout", {"t": "wrong"}),
+        client.get("/search?q=leather"),
+        client.get("/guide"),
+        client.get("/settings"),
+        client.post("/settings", {"t": TOKEN, "character": "1", "rank": "0"}),
     ]
 
     for response in responses:
         assert NERD not in response.body and "1.60.1.70450" not in response.body
 
+    assert [r.status for r in responses[-4:]] == [303, 303, 303, 303]
+
 
 # Escaping ----------------------------------------------------------------------------------------
 
 
-def test_game_strings_stay_inert(logged_in, conn, owner):
+def test_game_strings_stay_inert(logged_in, conn, owner, tmp_path):
     export = with_alt()
     char = export["chars"].pop(KEY)
     char.update(name=XSS, zone=XSS)
@@ -436,11 +458,26 @@ def test_game_strings_stay_inert(logged_in, conn, owner):
     store(conn, export)
     logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Altchar"]})
 
+    with owner.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET role = %s", (XSS,))
+
+    guide = tmp_path / "guide.md"
+    guide.write_text(f"# Plan\n\n{XSS}\n\n<div>{XSS}</div>\n\ninline <b>bold</b> {XSS}\n")
+    logged_in.server.conf = CONF._replace(guide=str(guide))
+
     index = logged_in.get("/").body
     character = logged_in.get(f"/c/Testrealm/{quote(XSS, safe='')}").body
+    search = logged_in.get("/search?" + urlencode({"q": XSS})).body
+    settings = logged_in.get("/settings").body
+    handbook = logged_in.get("/guide").body
 
-    for body in (index, character):
+    for body in (index, character, search, settings, handbook):
         assert XSS not in body and "<img" not in body
+
+    assert search.count(XSS_ESCAPED) >= 3, "the item, its character and the query in the box"
+    assert settings.count(XSS_ESCAPED) >= 2, "the name and the role"
+    assert handbook.count(XSS_ESCAPED) == 3 and "&lt;div&gt;" in handbook and "&lt;b&gt;bold&lt;/b&gt;" in handbook
+    assert "<div>" not in handbook and "<b>" not in handbook
 
     assert XSS_ESCAPED in index and f"herb → {XSS_ESCAPED}" in index
     assert f'href="/c/Testrealm/{quote(XSS, safe="")}"' in index, "the name's '/' is encoded too"
@@ -490,10 +527,10 @@ def raw_post(port: int, path: str, headers: str, body: bytes) -> bytes:
         return sock.recv(65536)
 
 
-def test_a_form_is_read_up_to_its_cap(client):
+def test_a_form_over_its_cap_is_refused_whole(client):
     body = b"x=" + b"a" * web.FORM_LIMIT + f"&password={PASSWORD}".encode()
 
-    assert raw_post(client.port, "/login", f"Content-Length: {len(body)}\r\n", body).startswith(b"HTTP/1.0 401")
+    assert raw_post(client.port, "/login", f"Content-Length: {len(body)}\r\n", body).startswith(b"HTTP/1.0 413")
 
 
 def test_a_negative_content_length_reads_nothing(client):
@@ -551,7 +588,7 @@ def test_plain_http_is_never_bound_to_every_interface(value):
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [("127.0.0.1:8094", ("127.0.0.1", 8094)), ("172.17.0.1:8094", ("172.17.0.1", 8094)), ("[::1]:8094", ("::1", 8094))],
+    [("127.0.0.1:8094", ("127.0.0.1", 8094)), ("192.0.2.1:8094", ("192.0.2.1", 8094)), ("[::1]:8094", ("::1", 8094))],
 )
 def test_one_named_address_is_bound(value, expected):
     assert web.listen_address(value) == expected
@@ -562,3 +599,539 @@ def test_a_missing_setting_is_named_without_values():
         web.load_config({"DATABASE_URL": "postgresql://who:hunter2@db/x"})
 
     assert "hunter2" not in str(caught.value)
+
+
+# Bank and mailbox ---------------------------------------------------------------------------------
+
+
+def test_a_logout_without_a_bank_visit_keeps_the_last_bank(logged_in, conn):
+    export = account()
+    export["chars"][KEY]["bank"] = {"as_of": 1792530000, "items": [{"id": 2589, "name": "Linen Cloth", "count": 5}]}
+    store(conn, export)
+    later = account()
+    later["exported_at"] += 3600
+    later["chars"][KEY]["logout_at"] += 3600
+    store(conn, later)
+
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+    found = logged_in.get("/search?q=linen").body
+
+    assert '<span class="n">Linen Cloth</span><span class="count">5</span>' in body and "Bank, as of" in body
+    assert "bags 32 · bank 5</span>" in found, "no separator after the last non-empty container"
+
+
+# Search -------------------------------------------------------------------------------------------
+
+
+def searched(logged_in, q: str) -> str:
+    return logged_in.get("/search?" + urlencode({"q": q})).body
+
+
+def test_search_counts_per_character_and_container(logged_in, conn):
+    export = with_alt()
+    export["chars"][KEY]["mailbox"] = {
+        "as_of": 1792570000,
+        "mails": [{"from": "other", "money": 0, "items": [{"id": 2589, "name": "Linen Cloth", "count": 3}]}] * 2,
+    }
+    store(conn, export)
+    body = searched(logged_in, "LINEN")
+
+    assert '<h2><span class="n">Linen Cloth</span><span class="sr">: </span><span class="count">70</span></h2>' in body, (
+        "32 + 6 + 32"
+    )
+    assert "bags 32 · mailbox 6" in body and body.count("bags 32") == 2
+
+
+def test_search_reads_only_the_newest_snapshot_of_listed_characters(logged_in, conn, owner):
+    store(conn, with_alt())
+    newer = with_alt()
+    newer["exported_at"] += 3600
+    newer["chars"][KEY]["logout_at"] += 3600
+    newer["chars"][KEY]["bags"] = [b for b in newer["chars"][KEY]["bags"] if b["name"] != "Linen Cloth"]
+    store(conn, newer)
+
+    with owner.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name = 'Altchar'")
+
+    assert "Nothing called" in searched(logged_in, "linen")
+
+
+@pytest.mark.parametrize("q", ["%", "_", "\\", "x' OR '1'='1", "%%linen"])
+def test_search_takes_the_query_literally(logged_in, conn, q):
+    store(conn, account())
+
+    assert "Nothing called" in searched(logged_in, q)
+
+
+def test_an_empty_search_shows_the_box_only(logged_in, conn):
+    store(conn, account())
+    body = logged_in.get("/search?q=+").body
+
+    assert "Search every character" in body and "Nothing called" not in body
+
+
+def test_search_finds_a_non_ascii_name(logged_in, conn):
+    export = account()
+    export["chars"][KEY]["bags"][0]["name"] = "Zoë's Ring"
+    store(conn, export)
+
+    assert "Zoë&#39;s Ring" in searched(logged_in, "zoë")
+
+
+# Guide --------------------------------------------------------------------------------------------
+
+
+def test_no_guide_set_says_so(logged_in):
+    assert "No guide set" in logged_in.get("/guide").body
+
+
+def test_an_unreadable_guide_names_only_the_class(logged_in, tmp_path, capsys):
+    logged_in.server.conf = CONF._replace(guide=str(tmp_path / "missing.md"))
+    body = logged_in.get("/guide").body
+
+    err = capsys.readouterr().err
+
+    assert "The guide can&#39;t be read." in body
+    assert "pinkas: guide FileNotFoundError" in err and "missing.md" not in err
+
+
+def test_the_guide_renders_markdown_without_unsafe_links(logged_in, tmp_path):
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Alts\n\n| who | craft |\n|---|---|\n| one | Tailoring |\n\n"
+                     "[ok](https://example.com) [bad](javascript:alert(1))\n\n- [ ] open\n- [x] done\n", encoding="utf-8")
+    logged_in.server.conf = CONF._replace(guide=str(guide))
+    body = logged_in.get("/guide").body
+
+    assert "<h1>Alts</h1>" in body and body.count("<h1") == 1 and "<td>Tailoring</td>" in body
+    assert '<div class="table-box" tabindex="0" role="region" aria-label="Alts">\n<table>' in body
+    assert '<a href="https://example.com">ok</a>' in body and 'href="javascript:' not in body
+    assert '<li class="task">☐ open</li>' in body and '<li class="task">☑ done</li>' in body
+
+
+def test_only_the_guide_is_inserted_unescaped():
+    templates = Path(web.TEMPLATES.loader.searchpath[0]).glob("*.html")
+    uses = {path.name: path.read_text().count("|safe") for path in templates}
+
+    assert {name: count for name, count in uses.items() if count} == {"_guide.html": 1}
+
+
+# Settings and targets -----------------------------------------------------------------------------
+
+
+def targets(owner) -> list[tuple]:
+    with owner.cursor() as cur:
+        cur.execute("SELECT skill_line, skill FROM pinkas_targets ORDER BY skill_line, skill")
+
+        return cur.fetchall()
+
+
+def character_row(owner, name: str = "Fakechar") -> tuple:
+    with owner.cursor() as cur:
+        cur.execute(
+            "SELECT role, sort, well_rested_rank, archived_at IS NOT NULL, playing_since IS NOT NULL"
+            " FROM pinkas_characters WHERE name = %s",
+            (name,),
+        )
+
+        return cur.fetchone()
+
+
+def settings_form(owner, **fields) -> dict:
+    return {"t": TOKEN, "character": ids(owner)["Fakechar"], "role": "", "sort": "", "rank": "0", **fields}
+
+
+def test_settings_save_every_owner_field(logged_in, conn, owner):
+    store(conn, with_alt(professions=[{"skill_line": 197, "name": "Tailoring", "rank": 1, "max": 75}]))
+    logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Fakechar"]})
+    form = settings_form(owner, role=" main ", sort="-3", rank="4", **{"target-393": "225", "target-197": "300"})
+    response = logged_in.post("/settings", form)
+
+    assert response.status == 303 and response.headers["Location"] == "/settings"
+    assert character_row(owner) == ("main", -3, 4, False, True)
+    assert targets(owner) == [(197, 150), (197, 225), (197, 300), (393, 150), (393, 225)], "Tailoring is planned"
+
+    logged_in.post("/settings", settings_form(owner, archived="on", **{"target-393": ""}))
+
+    assert character_row(owner) == (None, None, 0, True, False), "archiving ends playing"
+    assert targets(owner) == [(197, 150), (197, 225), (197, 300)], "a skill line the form left out keeps its rows"
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"t": "wrong"},
+        {"character": "999"},
+        {"character": "x"},
+        {"rank": "6"},
+        {"rank": ""},
+        {"sort": "x"},
+        {"sort": "10001"},
+        {"role": "x" * 41},
+        {"target-393": "100"},
+        {"target-999": "150"},
+        {"target-x": "150"},
+    ],
+)
+def test_settings_refuse_a_bad_value_and_write_nothing(logged_in, conn, owner, fields):
+    store(conn, account())
+    response = logged_in.post("/settings", settings_form(owner, role="main", **{"target-393": "150"}) | fields)
+
+    assert response.status == 400
+    assert character_row(owner) == (None, None, 0, False, False) and targets(owner) == []
+
+
+def test_the_app_role_cannot_rename_a_character(conn):
+    store(conn, account())
+
+    with pytest.raises(psycopg2.errors.InsufficientPrivilege), conn, conn.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET name = 'Other'")
+
+
+def test_settings_list_learned_professions_first_and_archived_characters_last(logged_in, conn, owner):
+    store(conn, with_alt(professions=[{"skill_line": 197, "name": "Tailoring", "rank": 1, "max": 75}]))
+
+    with owner.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name = 'Fakechar'")
+
+    body = logged_in.get("/settings").body
+    altchar, fakechar = body.split("Altchar · Testrealm")[1].split("Fakechar · Testrealm")
+
+    assert altchar.index("Tailoring") < altchar.index("Other professions") < altchar.index("Skinning")
+    assert "archived" in fakechar.split("</h2>")[0]
+
+
+@pytest.mark.parametrize(
+    ("upto", "shown"),
+    [
+        (None, '<div class="prof cap"><span class="n">Skinning</span><span class="count">75/75 · train</span><meter min="0" max="75" value="75"'),
+        ("150", '<div class="prof"><span class="n">Skinning</span><span class="count">75/150</span><meter min="0" max="150" value="75"'),
+        ("", '<div class="prof cap"><span class="n">Skinning</span><span class="count">75/75 · train</span><meter min="0" max="75" value="75"'),
+    ],
+    ids=["no target: train", "a target above the cap", "target cleared"],
+)
+def test_targets_show_as_progress_bars(logged_in, conn, owner, upto, shown):
+    store(conn, account())
+
+    if upto is not None:
+        logged_in.post("/settings", settings_form(owner, **{"target-393": upto}))
+
+    for page in ("/", "/c/Testrealm/Fakechar"):
+        assert shown in logged_in.get(page).body
+
+
+def test_a_met_target_is_ticked_and_a_planned_one_listed(logged_in, conn, owner):
+    store(conn, with_alt(professions=[{"skill_line": 197, "name": "Tailoring", "rank": 1, "max": 75}]))
+
+    with owner.cursor() as cur:
+        cur.execute(
+            "INSERT INTO pinkas_targets (character_id, skill_line, skill) VALUES (%s, 393, 150), (%s, 197, 150)",
+            (ids(owner)["Fakechar"], ids(owner)["Fakechar"]),
+        )
+        cur.execute("UPDATE pinkas_snapshots SET data = jsonb_set(data, '{professions,0,rank}', '150')")
+
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert '<div class="prof met"><span class="n">Skinning</span><span class="count">150 ✓</span>' in body
+    assert '<span class="n">Tailoring</span><span class="note">planned, not learned · up to 150' in body
+
+
+def test_a_target_for_a_profession_no_snapshot_names_stays_visible_and_clearable(logged_in, conn, owner):
+    store(conn, account())
+
+    with owner.cursor() as cur:
+        cur.execute("INSERT INTO pinkas_targets (character_id, skill_line, skill) VALUES (%s, 999, 150)",
+                    (ids(owner)["Fakechar"],))
+
+    settings = logged_in.get("/settings").body
+    character = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert settings.index("Skinning") < settings.index("profession 999")
+    assert '<span class="n">profession 999</span><span class="note">planned, not learned · up to 150' in character
+    assert logged_in.post("/settings", settings_form(owner, **{"target-999": ""})).status == 303
+    assert targets(owner) == []
+
+
+@pytest.mark.parametrize(
+    ("level", "shown"),
+    [
+        (
+            10,
+            '<meter min="0" max="7600" value="2296" aria-label="XP of Fakechar toward level 11"></meter>'
+            '<span class="val">30% to level 11</span>',
+        ),
+        (60, '<span class="label">Level 60</span><span class="val">max level</span>'),
+    ],
+)
+def test_a_level_bar_until_the_cap(logged_in, conn, level, shown):
+    export = account()
+    export["chars"][KEY]["level"] = level
+    store(conn, export)
+
+    for page in ("/", "/c/Testrealm/Fakechar"):
+        assert shown in logged_in.get(page).body
+
+
+def test_secondary_professions_have_their_own_column(logged_in, conn):
+    store(conn, account())
+    row = logged_in.get("/").body.split('<div class="facts">')[1]
+    professions, secondary = row.split('label">Professions</span>')[1].split('label">Secondary</span>')
+    secondary = secondary.split('class="foot"')[0]
+
+    assert "Skinning" in professions and "Fishing" not in professions and "Cooking" not in professions
+    assert "Fishing" in secondary and "Cooking" in secondary
+
+
+def account_panel(logged_in) -> str:
+    return logged_in.get("/").body.split('class="panel account"')[1].split("</details>")[0]
+
+
+def test_the_account_leaves_archived_characters_out(logged_in, conn, owner):
+    store(conn, with_alt(money=5))
+
+    with owner.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name = 'Altchar'")
+
+    account = account_panel(logged_in)
+
+    assert '<span class="gold">10g 16s 94c</span>' in account and "Altchar" not in account
+
+
+def test_two_characters_with_one_profession_share_its_entry_highest_first(logged_in, conn):
+    store(conn, with_alt(professions=[{"skill_line": 393, "name": "Skinning", "rank": 40, "max": 75}], money=5))
+    account = account_panel(logged_in)
+    skinning = account.split('<span class="label">Skinning</span>')[1].split('<span class="label">')[0]
+
+    assert '<span class="gold">10g 16s 99c</span>' in account
+    assert skinning.index("Fakechar") < skinning.index("Altchar") and account.index("Skinning") < account.index("Cooking")
+    assert '<a class="n" href="/c/Testrealm/Altchar">Altchar</a>' in skinning
+    assert 'aria-label="Skinning of Altchar toward 75"' in skinning
+
+
+def test_the_character_page_opens_the_guide_beside_it(logged_in, conn, tmp_path):
+    store(conn, account())
+    without = logged_in.get("/c/Testrealm/Fakechar").body
+    guide = tmp_path / "guide.md"
+    guide.write_text("# Plan\n\n## Rotation\n", encoding="utf-8")
+    logged_in.server.conf = CONF._replace(guide=str(guide))
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert 'class="panel side"' not in without
+    assert '<details class="panel side" open><summary>Guide</summary>' in body
+    assert "<h2>Plan</h2>" in body and "<h3>Rotation</h3>" in body, "one level down: the character is the h1"
+    assert body.count("<h1") == 1
+
+
+def card(body: str, name: str) -> str:
+    return body.split(f">{name}</a></h2>")[1].split("</article>")[0]
+
+
+@pytest.mark.parametrize(
+    ("alt", "play", "expected"),
+    [({}, None, "Altchar"), ({}, "Altchar", "Fakechar"), ({"level": 60}, None, "Fakechar")],
+    ids=["most rested", "not while playing", "not at max level"],
+)
+def test_the_most_rested_character_is_next_up(logged_in, conn, owner, alt, play, expected):
+    export = with_alt()
+    export["chars"]["Testrealm/Altchar"].update(rested=14000, **alt)
+    store(conn, export)
+
+    if play:
+        logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)[play]})
+
+    body = logged_in.get("/").body
+
+    assert body.count("next up") == 1 and '<span class="pill pos">next up</span>' in card(body, expected)
+
+
+def test_the_cards_carry_their_sort_keys_for_the_script(logged_in, conn, owner):
+    export = with_alt()
+    export["chars"]["Testrealm/Altchar"]["level"] = 60
+    store(conn, export)
+    logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Altchar"]})
+    body = logged_in.get("/").body
+    keys = json.loads(body.split('<script type="application/json" id="cards">')[1].split("</script>")[0])
+    known = ids(owner)
+    fakechar = keys[f"c{known['Fakechar']}"]
+
+    assert '<div class="tools" id="card-tools" hidden>' in body and f'id="c{known["Fakechar"]}"' in body
+    assert keys[f"c{known['Altchar']}"]["playing"] is True and fakechar["playing"] is False
+    assert keys[f"c{known['Altchar']}"]["rested"] is None, "none at max level"
+    assert fakechar["name"] == "Fakechar" and fakechar["level"] == 10 and fakechar["role"] is None
+    assert fakechar["professions"] == ["Skinning", "Fishing", "Cooking"]
+    assert fakechar["seen"] == account()["chars"][KEY]["logout_at"] and 0 < fakechar["rested"] <= 1.5
+
+
+def test_the_only_script_is_the_apps_own_file(logged_in, conn):
+    store(conn, account())
+    script = Client(logged_in.port).get(web.SCRIPT_PATH)
+
+    assert script.status == 200 and script.headers["Content-Type"] == "text/javascript; charset=utf-8"
+    assert script.body == (web.ROOT / "static" / "pinkas.js").read_text(encoding="utf-8")
+    assert script.headers["Content-Security-Policy"].startswith("default-src 'none'; script-src 'self';")
+
+    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings", "/guide", "/nothing"):
+        tags = re.findall(r"<script[^>]*>", logged_in.get(path).body)
+
+        assert '<script src="/static/pinkas.js" defer>' in tags
+        assert set(tags) <= {'<script src="/static/pinkas.js" defer>', '<script type="application/json" id="cards">'}
+
+
+def test_the_script_is_revalidated_while_pages_are_never_stored(logged_in, conn):
+    store(conn, account())
+    direct = http.client.HTTPConnection("127.0.0.1", logged_in.port, timeout=5)
+    direct.request("GET", web.SCRIPT_PATH, headers={"If-None-Match": web.SCRIPT_ETAG})
+    revalidated = direct.getresponse()
+    body = revalidated.read()
+    direct.close()
+    script = logged_in.get(web.SCRIPT_PATH)
+
+    assert script.headers["ETag"] == web.SCRIPT_ETAG and script.headers["Cache-Control"] == "no-cache"
+    assert revalidated.status == 304 and body == b""
+    assert logged_in.get("/").headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings", "/guide", "/nothing", "/login"]
+)
+def test_every_page_has_one_h1(logged_in, conn, path):
+    store(conn, account())
+
+    assert logged_in.get(path).body.count("<h1") == 1
+
+
+@pytest.mark.parametrize(
+    ("copper", "shown"),
+    [(None, "?"), (0, "0c"), (12, "12c"), (2500, "25s"), (45000, "4g 50s"), (100_149_205, "10\u202f014g 92s 5c")],
+)
+def test_gold_leaves_zero_units_out(copper, shown):
+    assert web.gold(copper) == shown
+
+
+@pytest.mark.parametrize(
+    ("days", "shown"),
+    [(1, '<span title="{local}">1 d ago</span>'), (4, '<span class="stale" title="{local}">4 d ago · stale</span>')],
+)
+def test_an_as_of_older_than_three_days_is_stale(days, shown):
+    moment = datetime.now(UTC) - timedelta(days=days, minutes=1)
+    template = web.TEMPLATES.from_string('{% from "macros.html" import as_of %}{{ as_of(moment) }}')
+
+    assert template.render(moment=moment) == shown.format(local=web.local(moment))
+
+
+# Item groups, slots and the mail plan -------------------------------------------------------------
+
+
+def item(item_id: int, name: str, count: int, quality: int = 1, cls: int = 0, sub: int = 0) -> dict:
+    return {"id": item_id, "name": name, "count": count, "quality": quality, "class": cls, "subclass": sub}
+
+
+LINEN, LEATHER = item(2589, "Linen Cloth", 20, cls=7, sub=5), item(2318, "Light Leather", 10, cls=7, sub=6)
+
+
+def routed_account(bank_slots: int = 24) -> dict:
+    """Fakechar holds cloth (routed to Altchar), leather (routed to itself) and junk; Altchar holds leather."""
+    export = account_v3()
+    export["routes"] = {"cloth": "Altchar", "leather": "Fakechar-Testrealm", "herb": "Nobody"}
+    char = export["chars"][KEY]
+    char["bags"] = [LINEN, LINEN, LEATHER, item(1, "Broken Fang", 4, quality=0), item(2, "Hearthstone", 1),
+                    item(3, "Wolf Bracers", 1, quality=2)]
+    char["bag_slots"] = 6
+    char["bank"] = {"as_of": 1792570000, "slots": bank_slots, "items": [LEATHER, item(4, "Tigerseye", 2, quality=3)]}
+    alt = copy.deepcopy(char)
+    alt.update(name="Altchar", bags=[LEATHER], bag_slots=20, bank=None, mailbox=None)
+    export["chars"]["Testrealm/Altchar"] = alt
+
+    return export
+
+
+def test_bags_and_bank_are_grouped_by_where_their_items_go(logged_in, conn):
+    store(conn, routed_account())
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+    bags, bank = body.split("<span>Bags</span>")[1].split("<span>Bank, as of")
+
+    assert 'Cloth → <a href="/c/Testrealm/Altchar">Altchar</a></span><span>2 slots</span>' in bags
+    assert "Linen Cloth</span><span class=\"count\">40</span>" in bags, "two stacks as one line"
+    assert "<span>Leather → bank</span><span>1 slot</span>" in bags
+    assert "<span>Junk → vendor</span>" in bags and "<span>Other</span><span>2 slots</span>" in bags
+    assert bags.index("Cloth →") < bags.index("Leather → bank") < bags.index("Junk") < bags.index("Other")
+    assert "<span>Leather · own mats</span>" in bank and "Cloth →" not in bank
+
+
+def test_a_route_to_nobody_known_is_plain_text_and_its_kind_stays_routed(logged_in, conn):
+    export = routed_account()
+    export["chars"][KEY]["bags"].append(item(5, "Peacebloom", 3, cls=7, sub=9))
+    store(conn, export)
+    bags = logged_in.get("/c/Testrealm/Fakechar").body.split("<span>Bags</span>")[1].split("<span>Bank")[0]
+
+    assert "<span>Herbs → Nobody</span>" in bags
+
+
+def test_a_full_bank_turns_own_mats_in_the_bags_into_a_warning(logged_in, conn):
+    store(conn, routed_account(bank_slots=2))
+    bags = logged_in.get("/c/Testrealm/Fakechar").body.split("<span>Bags</span>")[1].split("<span>Bank")[0]
+
+    assert "<span>Leather · bank full</span>" in bags
+
+
+def test_items_carry_their_quality_colour_and_word(logged_in, conn):
+    store(conn, routed_account())
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert '<span class="n q0">Broken Fang<span class="sr"> (poor)</span></span>' in body
+    assert '<span class="n q2">Wolf Bracers<span class="sr"> (uncommon)</span></span>' in body
+    assert '<span class="n q3">Tigerseye<span class="sr"> (rare)</span></span>' in body
+    assert '<span class="n">Hearthstone</span>' in body, "common is plain"
+
+
+@pytest.mark.parametrize(
+    ("used", "level"),
+    [(4, ""), (5, ' class="warn"'), (6, ' class="neg"')],
+)
+def test_bag_slots_show_used_of_total_and_warn_from_70_percent(logged_in, conn, used, level):
+    export = routed_account()
+    export["chars"][KEY]["bag_slots"] = 7 if used < 6 else 6
+    export["chars"][KEY]["bags"] = export["chars"][KEY]["bags"][:used]
+    store(conn, export)
+    total = export["chars"][KEY]["bag_slots"]
+    page = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert f"Bags <b{level}>{used}/{total}</b>" in logged_in.get("/").body
+    assert f'<meter class="slots" min="0" max="{total}"' in page and f"{used}/{total} slots" in page
+
+
+def test_a_v2_snapshot_shows_slots_used_without_a_total(logged_in, conn):
+    store(conn, account())
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert '<meter class="slots"' not in body and "Bags <b>27</b>" in logged_in.get("/").body
+
+
+def test_the_mail_plan_adds_up_routed_slots_per_character(logged_in, conn):
+    store(conn, routed_account())
+    plan = logged_in.get("/").body.split("Mail plan · slots to send")[1].split("</section>")[0]
+
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar</a></span>' in plan
+    assert '<a href="/c/Testrealm/Altchar">Altchar</a> 2<span class="sr"> slots</span>' in plan
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar-Testrealm</a> 1' in plan, "Altchar's leather, to a Name-Realm route"
+    assert "<span>cloth → Altchar</span> · <span>leather → Fakechar-Testrealm</span>" in plan
+
+
+def test_without_routes_there_is_no_mail_plan(logged_in, conn):
+    store(conn, account())
+
+    assert "Mail plan" not in logged_in.get("/").body
+
+
+def test_search_results_carry_the_item_quality(logged_in, conn):
+    store(conn, routed_account())
+
+    assert '<span class="n q2">Wolf Bracers<span class="sr"> (uncommon)</span></span>' in searched(logged_in, "bracers")
+
+
+def test_an_item_also_in_the_mail_keeps_its_quality_in_search(logged_in, conn):
+    export = routed_account()
+    mailed = {**item(3, "Wolf Bracers", 1), "quality": None, "class": None, "subclass": None}
+    export["chars"]["Testrealm/Altchar"]["mailbox"] = {"as_of": 1792570000, "mails": [{"from": "other", "money": 0, "items": [mailed]}]}
+    store(conn, export)
+
+    assert '<span class="n q2">Wolf Bracers' in searched(logged_in, "bracers")
