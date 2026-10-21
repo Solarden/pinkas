@@ -1,6 +1,10 @@
 local _, ns = ...
 
-ns.NULL = setmetatable({}, { __tostring = function() return "null" end })
+ns.NULL = setmetatable({}, {
+  __tostring = function()
+    return "null"
+  end,
+})
 local ARRAY = {}
 
 -- An empty Lua table can't tell an array from an object, so arrays are marked.
@@ -12,17 +16,20 @@ local escapes = { ['"'] = '\\"', ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r"
 
 local function encodeString(s)
   -- Bytes >= 0x80 pass through, so UTF-8 names stay intact.
-  return '"' .. s:gsub('[%c"\\]', function(ch)
-    return escapes[ch] or string.format("\\u%04x", ch:byte())
-  end) .. '"'
+  return '"'
+    .. s:gsub('[%c"\\]', function(ch)
+      return escapes[ch] or string.format("\\u%04x", ch:byte())
+    end)
+    .. '"'
 end
 
 local function encodeNumber(n)
   if n ~= n or n == math.huge or n == -math.huge then
     return "null"
   end
+  -- Not "%d": Lua 5.1 formats it through C long, 32 bits on Windows, and would wrap past 2^31.
   if n == math.floor(n) and math.abs(n) < 2 ^ 53 then
-    return string.format("%d", n)
+    return string.format("%.0f", n)
   end
 
   return string.format("%.14g", n)

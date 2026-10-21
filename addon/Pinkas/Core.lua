@@ -1,7 +1,9 @@
 local addonName, ns = ...
 
 ns.NAME = addonName
-ns.VERSION = 1
+-- Two versions: the saved data's own layout, and the export contract the pull parses.
+ns.DB_VERSION = 1
+ns.EXPORT_VERSION = 1
 -- Each event is in the file twice (the cache and the export): a full 8-character account at 500
 -- measures 2.9 MB against the pull's 5 MB cap (addon_test.lua).
 ns.EVENT_CAP = 500
@@ -10,6 +12,7 @@ ns.FAULT_CAP = 20
 ns.TOTALS_KEEP_SECONDS = 14 * 24 * 3600
 
 local handlers = {}
+local units = {}
 local frame = CreateFrame("Frame")
 
 function ns.fault(where, err)
@@ -24,15 +27,25 @@ function ns.fault(where, err)
   end
 end
 
-function ns.on(event, fn)
+-- `unit` has the game deliver a UNIT_* event for that unit only, instead of for everyone nearby.
+-- The filter is per event, so every handler of the event must ask for the same one.
+function ns.on(event, fn, unit)
   if not handlers[event] then
     handlers[event] = {}
+    units[event] = unit
     -- Forever blocks some events for addons (the combat log); one refusal must not stop the rest.
-    local ok, err = pcall(frame.RegisterEvent, frame, event)
+    -- No trailing nil: RegisterEvent takes the name alone.
+    local ok, err
+    if unit then
+      ok, err = pcall(frame.RegisterUnitEvent, frame, event, unit)
+    else
+      ok, err = pcall(frame.RegisterEvent, frame, event)
+    end
     if not ok then
       ns.fault("register " .. event, err)
     end
   end
+  assert(units[event] == unit, event .. " is already registered with another unit filter")
   table.insert(handlers[event], fn)
 end
 
@@ -66,6 +79,12 @@ function ns.plain(value)
   return ok and value or nil
 end
 
+-- For an API that returns a number or nil: nil can mean "none" (no rested XP), a secret means
+-- "unknown right now", and the two must not be confused.
+function ns.isSecret(value)
+  return value ~= nil and ns.plain(value) == nil
+end
+
 function ns.addEvent(kind, value)
   local c = ns.char
   local id = c.nextEventId
@@ -97,6 +116,12 @@ function ns.add(t, field, amount)
   t[field] = (t[field] or 0) + amount
 end
 
+-- The server takes a recipient in any case ("altname"), and writes another realm without its
+-- spaces ("Alt-OtherRealm" for "Other Realm"), so keys are compared in that form.
+local function plainKey(key)
+  return (key:lower():gsub("[%s%-]", ""))
+end
+
 -- "Name" or "Name-Realm" → the account's character key, or nil for anyone else.
 function ns.ownKey(name)
   if type(name) ~= "string" or name == "" then
@@ -104,30 +129,45 @@ function ns.ownKey(name)
   end
   local short, realm = name:match("^([^-]+)-(.+)$")
   local key = (realm or ns.char.realm) .. "/" .. (short or name)
+  if PinkasDB.chars[key] then
+    return key
+  end
+  local wanted = plainKey(key)
+  for known in pairs(PinkasDB.chars) do
+    if plainKey(known) == wanted then
+      return known
+    end
+  end
 
-  return PinkasDB.chars[key] and key or nil
+  return nil
 end
 
 ns.on("ADDON_LOADED", function(name)
   if name ~= ns.NAME then
     return
   end
-  PinkasDB = PinkasDB or {}
-  PinkasDB.v = ns.VERSION
-  PinkasDB.routes = PinkasDB.routes or {}
-  PinkasDB.chars = PinkasDB.chars or {}
-  PinkasDB.faults = PinkasDB.faults or {}
+  -- A damaged file must not stop the addon: a part that isn't a table starts empty.
+  if type(PinkasDB) ~= "table" then
+    PinkasDB = {}
+  end
+  -- A DB_VERSION bump needs its migration here, before the stamp.
+  PinkasDB.v = ns.DB_VERSION
+  for _, part in ipairs({ "routes", "chars", "faults" }) do
+    if type(PinkasDB[part]) ~= "table" then
+      PinkasDB[part] = {}
+    end
+  end
 end)
 
 ns.on("PLAYER_LOGIN", function()
   local name, realm = UnitName("player"), GetRealmName()
   ns.key = realm .. "/" .. name
-  local c = PinkasDB.chars[ns.key] or {}
+  local c = type(PinkasDB.chars[ns.key]) == "table" and PinkasDB.chars[ns.key] or {}
   PinkasDB.chars[ns.key] = c
   c.name, c.realm = name, realm
-  c.events = c.events or {}
-  c.totals = c.totals or {}
-  c.nextEventId = c.nextEventId or 1
+  c.events = type(c.events) == "table" and c.events or {}
+  c.totals = type(c.totals) == "table" and c.totals or {}
+  c.nextEventId = type(c.nextEventId) == "number" and c.nextEventId or 1
   ns.char = c
 end)
 
@@ -139,7 +179,8 @@ ns.on("PLAYER_ENTERING_WORLD", function(isInitialLogin)
     c.session = { started_at = time(), lastMeterId = 0 }
     local cutoff = time() - ns.TOTALS_KEEP_SECONDS
     for id, row in pairs(c.totals) do
-      if row.session < cutoff then
+      -- A damaged row goes too: it would otherwise break this loop and every export.
+      if type(row) ~= "table" or type(row.session) ~= "number" or row.session < cutoff then
         c.totals[id] = nil
       end
     end

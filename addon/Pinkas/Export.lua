@@ -92,27 +92,52 @@ end
 -- Every key is always present (pinkas/parse.py checks the contract), so each object is built from a
 -- fixed field list rather than by walking the cache, where an unknown value is simply absent.
 local function character(c)
+  -- A string indexes without error in Lua, so a damaged entry would export as a nameless character
+  -- that makes the parser refuse the whole file.
+  assert(type(c) == "table" and type(c.name) == "string" and type(c.realm) == "string", "not a character")
   local session = c.session or {}
   local played = c.played and { total = c.played.total, level = c.played.level, at = c.played.at } or NULL
 
   return {
-    name = orNull(c.name), realm = orNull(c.realm), class = orNull(c.class), race = orNull(c.race),
-    level = orNull(c.level), xp = orNull(c.xp), xp_max = orNull(c.xp_max), rested = orNull(c.rested),
-    resting = orNull(c.resting), money = orNull(c.money), zone = orNull(c.zone), map = orNull(c.map),
-    x = orNull(c.x), y = orNull(c.y), session_started_at = orNull(session.started_at),
-    logout_at = orNull(c.logout_at), played = played, professions = professions(c.professions),
-    bags = items(c.bags), bank = container(c.bank), mailbox = mailbox(c.mailbox),
-    events = events(c.events), totals = totals(c.totals),
+    name = orNull(c.name),
+    realm = orNull(c.realm),
+    class = orNull(c.class),
+    race = orNull(c.race),
+    level = orNull(c.level),
+    xp = orNull(c.xp),
+    xp_max = orNull(c.xp_max),
+    rested = orNull(c.rested),
+    resting = orNull(c.resting),
+    money = orNull(c.money),
+    zone = orNull(c.zone),
+    map = orNull(c.map),
+    x = orNull(c.x),
+    y = orNull(c.y),
+    session_started_at = orNull(session.started_at),
+    logout_at = orNull(c.logout_at),
+    played = played,
+    professions = professions(c.professions),
+    bags = items(c.bags),
+    bank = container(c.bank),
+    mailbox = mailbox(c.mailbox),
+    events = events(c.events),
+    totals = totals(c.totals),
   }
 end
 
 function ns.buildExport()
   local chars = {}
+  -- A damaged entry is left out and noted, so it can't stop every other character's export.
   for key, c in pairs(PinkasDB.chars) do
-    chars[key] = character(c)
+    local ok, built = pcall(character, c)
+    if ok then
+      chars[key] = built
+    else
+      ns.fault("export " .. key, built)
+    end
   end
 
-  return ns.json({ v = ns.VERSION, exported_at = time(), routes = PinkasDB.routes, chars = chars })
+  return ns.json({ v = ns.EXPORT_VERSION, exported_at = time(), routes = PinkasDB.routes, chars = chars })
 end
 
 -- A real logout has already emptied the unit, so nothing is read from the game here.

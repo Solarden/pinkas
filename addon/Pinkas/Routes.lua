@@ -49,10 +49,10 @@ function ns.fillNextMail()
     return
   end
   for _, name in ipairs(ORDER) do
-    -- A route without a recipient is off; no route ships with one, because a made-up name could
-    -- belong to a real player.
+    -- No route ships with a recipient (a made-up name could be a real player's), and a character
+    -- never mails itself, however the route was typed.
     local to = PinkasDB.routes[name]
-    local items = (to and to ~= "" and to ~= UnitName("player")) and bagItems(KINDS[name]) or {}
+    local items = (to and to ~= "" and ns.ownKey(to) ~= ns.key) and bagItems(KINDS[name]) or {}
     if #items > 0 then
       local count = math.min(#items, ATTACHMENTS_MAX_SEND)
       for i = 1, count do

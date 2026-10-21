@@ -44,10 +44,15 @@ local function refreshXP()
   if ns.leaving or not max or max == 0 then
     return
   end
+  local xp, rested = UnitXP("player"), GetXPExhaustion()
+  -- In combat these can be secret: keep the last good values rather than store unknowns over them.
+  if ns.isSecret(xp) or ns.isSecret(rested) then
+    return
+  end
   local c = ns.char
-  c.xp = plain(UnitXP("player"))
+  c.xp = plain(xp)
   c.xp_max = max
-  c.rested = plain(GetXPExhaustion())
+  c.rested = plain(rested)
   c.resting = IsResting() and true or false
 end
 
@@ -92,7 +97,7 @@ local function refreshBags()
   ns.char.bags = ns.readContainers(ns.BAGS)
 end
 
-function ns.refreshAll()
+local function refreshAll()
   refreshIdentity()
   refreshXP()
   refreshMoney()
@@ -101,7 +106,7 @@ function ns.refreshAll()
   refreshBags()
 end
 
-ns.on("PLAYER_ENTERING_WORLD", ns.refreshAll)
+ns.on("PLAYER_ENTERING_WORLD", refreshAll)
 ns.on("PLAYER_LEVEL_UP", function(level)
   refreshIdentity()
   -- UnitLevel can still report the old level while this event fires.

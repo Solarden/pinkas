@@ -7,7 +7,13 @@ Json.lua
 State.lua
 Bank.lua
 Mailbox.lua
-Events.lua
-Totals.lua
+Levels.lua
+Deaths.lua
+Quests.lua
+Dungeons.lua
+Gold.lua
+Combat.lua
+Gather.lua
+Rested.lua
 Routes.lua
 Export.lua

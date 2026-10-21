@@ -225,8 +225,9 @@ internal_docs
 .env
 .env.*
 !.env.example
-# Working notes for the coding assistant. Local to this checkout.
+# Working notes and rules for coding assistants. Local to this checkout.
 CLAUDE.md
+AGENTS.md
 
 # Git can't re-include a file inside an excluded directory, so nothing under WTF/ comes back below.
 WTF/

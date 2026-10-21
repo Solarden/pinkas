@@ -109,11 +109,34 @@ local world
 
 local function newWorld()
   world = {
-    now = 1792540000, name = "Testchar", realm = "Testrealm", level = 10, xp = 1664, xpMax = 7600,
-    rested = 892, resting = true, money = 1000, zone = "Orgrimmar", map = 1454, x = 0.54, y = 0.68,
-    inInstance = false, inCombat = false, bags = { [0] = {} }, bank = {}, inbox = {}, sendItems = {},
-    professions = { { "Skinning", 75, 75, 393 } }, meterSessions = {}, meterSources = {},
-    recap = nil, recapLink = nil, frames = {}, timers = {}, hooks = {}, played = nil,
+    now = 1792540000,
+    name = "Testchar",
+    realm = "Testrealm",
+    level = 10,
+    xp = 1664,
+    xpMax = 7600,
+    rested = 892,
+    resting = true,
+    money = 1000,
+    zone = "Orgrimmar",
+    map = 1454,
+    x = 0.54,
+    y = 0.68,
+    inInstance = false,
+    inCombat = false,
+    bags = { [0] = {} },
+    bank = {},
+    inbox = {},
+    sendItems = {},
+    professions = { { "Skinning", 75, 75, 393 } },
+    meterSessions = {},
+    meterSources = {},
+    recap = nil,
+    recapLink = nil,
+    frames = {},
+    timers = {},
+    hooks = {},
+    played = nil,
   }
 end
 
@@ -122,22 +145,31 @@ local env
 local function makeEnv()
   local e = setmetatable({}, { __index = _G })
   e._G = e
-  e.time = function() return world.now end
+  e.time = function()
+    return world.now
+  end
   e.print = function() end
   e.CreateFrame = function()
     local f = { events = {} }
-    function f:RegisterEvent(ev)
+    function f:RegisterEvent(...)
+      -- The client's RegisterEvent takes the event name alone.
+      assert(select("#", ...) == 1, "RegisterEvent takes only the event name")
+      local ev = ...
       if ev == "COMBAT_LOG_EVENT_UNFILTERED" then
         error("blocked")
       end
       self.events[ev] = true
     end
+    -- The game delivers the event only for that unit, the first argument.
+    function f:RegisterUnitEvent(ev, unit)
+      self.events[ev] = unit
+    end
     function f:SetScript(_, fn)
       self.onEvent = fn
     end
-    function f:SetSize() end
-    function f:SetPoint() end
-    function f:SetText() end
+    function f.SetSize() end
+    function f.SetPoint() end
+    function f.SetText() end
     world.frames[#world.frames + 1] = f
     return f
   end
@@ -145,30 +177,66 @@ local function makeEnv()
     world.hooks[name] = world.hooks[name] or {}
     table.insert(world.hooks[name], fn)
   end
-  e.C_Timer = { After = function(_, fn) table.insert(world.timers, fn) end }
-  e.UnitName = function() return world.name end
-  e.GetRealmName = function() return world.realm end
-  e.UnitClass = function() return "Shaman", "SHAMAN" end
-  e.UnitRace = function() return "Troll", "Troll" end
-  e.UnitLevel = function() return world.level end
-  e.UnitXP = function() return world.xp end
-  e.UnitXPMax = function() return world.xpMax end
-  e.GetXPExhaustion = function() return world.rested end
-  e.IsResting = function() return world.resting end
-  e.GetMoney = function() return world.money end
-  e.GetZoneText = function() return world.zone end
-  e.IsInInstance = function() return world.inInstance end
-  e.UnitAffectingCombat = function() return world.inCombat end
+  e.C_Timer = {
+    After = function(_, fn)
+      table.insert(world.timers, fn)
+    end,
+  }
+  e.UnitName = function()
+    return world.name
+  end
+  e.GetRealmName = function()
+    return world.realm
+  end
+  e.UnitClass = function()
+    return "Shaman", "SHAMAN"
+  end
+  e.UnitRace = function()
+    return "Troll", "Troll"
+  end
+  e.UnitLevel = function()
+    return world.level
+  end
+  e.UnitXP = function()
+    return world.xp
+  end
+  e.UnitXPMax = function()
+    return world.xpMax
+  end
+  e.GetXPExhaustion = function()
+    return world.rested
+  end
+  e.IsResting = function()
+    return world.resting
+  end
+  e.GetMoney = function()
+    return world.money
+  end
+  e.GetZoneText = function()
+    return world.zone
+  end
+  e.IsInInstance = function()
+    return world.inInstance
+  end
+  e.UnitAffectingCombat = function()
+    return world.inCombat
+  end
   e.C_Map = {
-    GetBestMapForUnit = function() return world.map end,
+    GetBestMapForUnit = function()
+      return world.map
+    end,
     GetPlayerMapPosition = function()
-      if world.inInstance then return nil end
+      if world.inInstance then
+        return nil
+      end
       return { x = world.x, y = world.y }
     end,
   }
   e.GetProfessions = function()
     local ids = {}
-    for i = 1, #world.professions do ids[i] = i end
+    for i = 1, #world.professions do
+      ids[i] = i
+    end
     return ids[1], ids[2], nil, nil, nil
   end
   e.GetProfessionInfo = function(i)
@@ -188,7 +256,9 @@ local function makeEnv()
       local slots = world.bags[bag] or world.bank[bag]
       return slots and slots[slot]
     end,
-    PickupContainerItem = function(bag, slot) world.cursor = world.bags[bag][slot] end,
+    PickupContainerItem = function(bag, slot)
+      world.cursor = world.bags[bag][slot]
+    end,
   }
   e.C_Item = {
     GetItemInfoInstant = function(id)
@@ -197,57 +267,99 @@ local function makeEnv()
       return id, nil, nil, nil, nil, c[1], c[2]
     end,
   }
-  e.ClickSendMailItemButton = function(i) world.sendItems[i] = world.cursor; world.cursor.isLocked = true end
-  e.ClearCursor = function() world.cursor = nil end
+  e.ClickSendMailItemButton = function(i)
+    world.sendItems[i] = world.cursor
+    world.cursor.isLocked = true
+  end
+  e.ClearCursor = function()
+    world.cursor = nil
+  end
   e.GetSendMailItem = function(i)
     local it = world.sendItems[i]
-    if it then return "Item " .. it.itemID, it.itemID, nil, it.stackCount end
+    if it then
+      return "Item " .. it.itemID, it.itemID, nil, it.stackCount
+    end
   end
-  e.SendMailNameEditBox = { SetText = function(_, v) world.mailTo = v end }
-  e.SendMailSubjectEditBox = { SetText = function(_, v) world.mailSubject = v end }
+  e.SendMailNameEditBox = {
+    SetText = function(_, v)
+      world.mailTo = v
+    end,
+  }
+  e.SendMailSubjectEditBox = {
+    SetText = function(_, v)
+      world.mailSubject = v
+    end,
+  }
   e.SendMailFrame = {}
   e.SlashCmdList = {}
-  e.GetInboxNumItems = function() return #world.inbox end
+  e.GetInboxNumItems = function()
+    return #world.inbox
+  end
   e.GetInboxHeaderInfo = function(i)
     local m = world.inbox[i]
     return nil, nil, m.sender, "subject", m.money
   end
   e.GetInboxItem = function(i, a)
     local it = world.inbox[i].items[a]
-    if it then return "Item " .. it.id, it.id, nil, it.count end
+    if it then
+      return "Item " .. it.id, it.id, nil, it.count
+    end
   end
-  e.RequestTimePlayed = function() world.playedRequested = true end
-  e.ChatFrameUtil = { DisplayTimePlayed = function() world.playedShown = (world.playedShown or 0) + 1 end }
+  e.RequestTimePlayed = function()
+    world.playedRequested = true
+  end
+  e.ChatFrameUtil = {
+    DisplayTimePlayed = function()
+      world.playedShown = (world.playedShown or 0) + 1
+    end,
+  }
   e.C_DeathRecap = {
-    GetRecapEvents = function() return world.recap end,
-    GetRecapLink = function() return world.recapLink end,
+    GetRecapEvents = function()
+      return world.recap
+    end,
+    GetRecapLink = function()
+      return world.recapLink
+    end,
   }
   e.C_DamageMeter = {
-    GetAvailableCombatSessions = function() return world.meterSessions end,
+    GetAvailableCombatSessions = function()
+      return world.meterSessions
+    end,
     GetCombatSessionFromID = function(id, meterType)
+      if world.meterUnserved and world.meterUnserved[meterType] then
+        error("no such meter")
+      end
       if world.inCombat or world.secret then
         return { combatSources = { { isLocalPlayer = true, totalAmount = SECRET } } }
       end
       local mine = (world.meterSources[id] or {})[meterType] or 0
-      return { combatSources = {
-        { isLocalPlayer = false, totalAmount = 999, name = "Someone Else" },
-        { isLocalPlayer = true, totalAmount = mine },
-      } }
+      return {
+        combatSources = {
+          { isLocalPlayer = false, totalAmount = 999, name = "Someone Else" },
+          { isLocalPlayer = true, totalAmount = mine },
+        },
+      }
     end,
   }
-  e.bit = { band = function(a, b)
-    local r, bitv = 0, 1
-    while a > 0 and b > 0 do
-      if a % 2 == 1 and b % 2 == 1 then r = r + bitv end
-      a, b, bitv = math.floor(a / 2), math.floor(b / 2), bitv * 2
-    end
-    return r
-  end }
+  e.bit = {
+    band = function(a, b)
+      local r, bitv = 0, 1
+      while a > 0 and b > 0 do
+        if a % 2 == 1 and b % 2 == 1 then
+          r = r + bitv
+        end
+        a, b, bitv = math.floor(a / 2), math.floor(b / 2), bitv * 2
+      end
+      return r
+    end,
+  }
   e.RepairAllItems = function() end
   e.TakeTaxiNode = function() end
   e.SendMail = function() end
   -- Stand in for Midnight's secret values: the addon must never store one.
-  e.issecretvalue = function(v) return v == SECRET end
+  e.issecretvalue = function(v)
+    return v == SECRET
+  end
   return e
 end
 
@@ -260,7 +372,8 @@ end
 
 local function fire(event, ...)
   for _, f in ipairs(world.frames) do
-    if f.events[event] and f.onEvent then
+    local filter = f.events[event]
+    if filter and f.onEvent and (filter == true or filter == ...) then
       f.onEvent(f, event, ...)
     end
   end
@@ -324,20 +437,26 @@ end
 -- Sessions ---------------------------------------------------------------------------------------
 
 test("a session starts on a real login and survives a reload", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   local started = env.PinkasDB.chars["Testrealm/Testchar"].session.started_at
   world.now = world.now + 600
   local db = env.PinkasDB
-  load(db); fire("PLAYER_LOGIN"); fire("PLAYER_ENTERING_WORLD", false, true)
+  load(db)
+  fire("PLAYER_LOGIN")
+  fire("PLAYER_ENTERING_WORLD", false, true)
   assert(env.PinkasDB.chars["Testrealm/Testchar"].session.started_at == started)
-  load(db); login(true)
+  load(db)
+  login(true)
   assert(env.PinkasDB.chars["Testrealm/Testchar"].session.started_at == world.now)
 end)
 
 test("a real logout exports the cache, not the emptied unit", function()
   newWorld()
   world.bags = { [0] = { { itemID = 2318, stackCount = 11, itemName = "Light Leather" } } }
-  load(nil); login(true)
+  load(nil)
+  login(true)
   local c = me(logoutAndExport())
   assert(c.xp == 1664 and c.xp_max == 7600 and c.money == 1000, "cache kept")
   assert(c.bags[1].id == 2318 and c.bags[1].count == 11 and c.bags[1].name == "Light Leather")
@@ -346,8 +465,10 @@ test("a real logout exports the cache, not the emptied unit", function()
 end)
 
 test("every contract key is present, unknown ones as null", function()
-  newWorld(); world.rested = nil
-  load(nil); login(true)
+  newWorld()
+  world.rested = nil
+  load(nil)
+  login(true)
   local c = me(logoutAndExport())
   for _, key in ipairs({ "rested", "bank", "mailbox", "played", "class", "race", "x", "y" }) do
     assert(c[key] ~= nil, "missing key " .. key)
@@ -359,7 +480,8 @@ end)
 -- JSON -------------------------------------------------------------------------------------------
 
 test("JSON escapes quotes, control characters and keeps UTF-8 bytes", function()
-  newWorld(); load(nil)
+  newWorld()
+  load(nil)
   local s = ns.json({ a = 'q"\\\n\1', b = "Zoë", c = ns.array({}), d = {}, e = 1.5, f = 3, g = ns.NULL })
   local t = decodeJson(s)
   assert(t.a == 'q"\\\n\1' and t.b == "Zoë" and t.e == 1.5 and t.f == 3 and t.g == "<null>")
@@ -371,7 +493,8 @@ end)
 test("no route ships with a recipient, and a route without one is skipped", function()
   newWorld()
   world.bags = { [0] = { { itemID = 2589, stackCount = 20 } } }
-  load(nil); login(true)
+  load(nil)
+  login(true)
   ns.fillNextMail()
   assert(world.mailTo == nil and next(world.sendItems) == nil, "nothing filled without routes")
   env.SlashCmdList.PINKAS("route cloth Altname")
@@ -382,28 +505,68 @@ test("no route ships with a recipient, and a route without one is skipped", func
   env.SlashCmdList.PINKAS("route leather Altname")
   ns.fillNextMail()
   assert(world.sendItems[1] and world.sendItems[1].itemID == 2318, "the reagent bag is routed too")
+  -- Fresh bags: the leather above is still locked as attached.
+  world.sendItems, world.mailTo = {}, nil
+  world.bags = { [0] = {}, [5] = { { itemID = 2318, stackCount = 3 } } }
+  env.SlashCmdList.PINKAS("route leather testchar")
+  ns.fillNextMail()
+  assert(world.mailTo == nil and next(world.sendItems) == nil, "a route to this character, in any case, is skipped")
 end)
 
 -- Mail -------------------------------------------------------------------------------------------
 
 test("mail is recorded only to the account's own characters", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   env.PinkasDB.chars["Testrealm/Altname"] = { name = "Altname", realm = "Testrealm" }
   world.sendItems = { { itemID = 2318, stackCount = 5 } }
-  callHooked("SendMail", "Stranger"); fire("MAIL_SEND_SUCCESS")
-  callHooked("SendMail", "Altname"); fire("MAIL_SEND_SUCCESS")
+  callHooked("SendMail", "Stranger")
+  fire("MAIL_SEND_SUCCESS")
+  callHooked("SendMail", "Altname")
+  fire("MAIL_SEND_SUCCESS")
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
   assert(#events == 1 and events[1].kind == "mail" and events[1].value.to == "Testrealm/Altname")
   world.inbox = { { sender = "Stranger", money = 0, items = {} }, { sender = "Altname", money = 5, items = {} } }
   fire("MAIL_INBOX_UPDATE")
   local mails = env.PinkasDB.chars["Testrealm/Testchar"].mailbox.mails
   assert(mails[1].from == "other" and mails[2].from == "Testrealm/Altname")
+  callHooked("SendMail", "altname")
+  fire("MAIL_SEND_SUCCESS")
+  assert(events[2].value.to == "Testrealm/Altname", "a recipient typed in lower case is still an own alt")
+  env.PinkasDB.chars["Other Realm/Farmer"] = { name = "Farmer", realm = "Other Realm" }
+  world.inbox = { { sender = "Farmer-OtherRealm", money = 0, items = {} } }
+  fire("MAIL_INBOX_UPDATE")
+  local from = env.PinkasDB.chars["Testrealm/Testchar"].mailbox.mails[1].from
+  assert(from == "Other Realm/Farmer", "another realm is written without its spaces")
+end)
+
+test("a secret XP read in combat keeps the cache and books no rested", function()
+  newWorld()
+  load(nil)
+  login(true)
+  local c = env.PinkasDB.chars["Testrealm/Testchar"]
+  -- XP readable, rested secret.
+  world.xp, world.rested = 1680, SECRET
+  fire("PLAYER_XP_UPDATE")
+  assert(c.xp == 1664 and c.rested == 892, "the last good values stay")
+  world.xp, world.rested = 1700, 870
+  fire("PLAYER_XP_UPDATE")
+  local rested
+  for _, row in pairs(c.totals) do
+    if row.kind == "rested" then
+      rested = row.value
+    end
+  end
+  assert(rested and rested.xp == 36 and rested.rested_used == 22, "only what the readable values show")
 end)
 
 -- Deaths -----------------------------------------------------------------------------------------
 
 local function deathKiller(recap)
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.recap, world.recapLink = recap, "|cff71d5ff|Hdeath:7|h[You died.]|h"
   fire("PLAYER_DEAD")
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
@@ -416,11 +579,19 @@ test("the killer is the killing blow: a mob, a player's pet, a fall", function()
     { event = "SWING_DAMAGE", overkill = 3, sourceName = "Boar", sourceFlags = 0xA48, timestamp = 2 },
   })
   assert(mob.killer == "Boar" and mob.recap_id == 7 and mob.level == 10)
-  local pet = deathKiller({ { event = "SWING_DAMAGE", overkill = 0, sourceName = "Fluffy", sourceFlags = 0x1111, timestamp = 1 } })
+  local pet = deathKiller({
+    { event = "SWING_DAMAGE", overkill = 0, sourceName = "Fluffy", sourceFlags = 0x1111, timestamp = 1 },
+  })
   assert(pet.killer == "player", "a player's pet is never named")
-  local fall = deathKiller({ { event = "ENVIRONMENTAL_DAMAGE", overkill = 0, environmentalType = "Falling", timestamp = 1 } })
+  local unflagged = deathKiller({ { event = "SWING_DAMAGE", overkill = 0, sourceName = "Someone", timestamp = 1 } })
+  assert(unflagged.killer == ns.NULL, "without flags the source could be a player, so no name is kept")
+  local fall =
+    deathKiller({ { event = "ENVIRONMENTAL_DAMAGE", overkill = 0, environmentalType = "Falling", timestamp = 1 } })
   assert(fall.killer == "Falling")
-  newWorld(); world.inInstance = true; load(nil); login(true)
+  newWorld()
+  world.inInstance = true
+  load(nil)
+  login(true)
   fire("PLAYER_DEAD")
   local inside = env.PinkasDB.chars["Testrealm/Testchar"].events[1].value
   assert(inside.x == ns.NULL and inside.y == ns.NULL, "position keys kept as null in an instance")
@@ -431,7 +602,9 @@ end)
 local function goldBy()
   local out = {}
   for _, row in pairs(env.PinkasDB.chars["Testrealm/Testchar"].totals) do
-    if row.kind == "gold" then out[row.key] = row.value end
+    if row.kind == "gold" then
+      out[row.key] = row.value
+    end
   end
   return out
 end
@@ -442,14 +615,21 @@ local function spend(amount)
 end
 
 test("money changes take their labels; a hook beats an open frame", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   fire("MERCHANT_SHOW")
-  callHooked("RepairAllItems"); spend(-25)
+  callHooked("RepairAllItems")
+  spend(-25)
   spend(28)
   fire("MERCHANT_CLOSED")
-  fire("LOOT_OPENED"); spend(4); fire("LOOT_CLOSED")
-  callHooked("TakeTaxiNode"); spend(-110)
-  callHooked("SendMail", "Stranger"); spend(-30)
+  fire("LOOT_OPENED")
+  spend(4)
+  fire("LOOT_CLOSED")
+  callHooked("TakeTaxiNode")
+  spend(-110)
+  callHooked("SendMail", "Stranger")
+  spend(-30)
   spend(100000)
   local g = goldBy()
   assert(g.repair.out == 25 and g.vendor["in"] == 28 and g.loot["in"] == 4)
@@ -457,7 +637,9 @@ test("money changes take their labels; a hook beats an open frame", function()
 end)
 
 test("a stale hook label expires instead of mislabeling later money", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   callHooked("TakeTaxiNode")
   world.now = world.now + 60
   spend(4)
@@ -468,70 +650,108 @@ end)
 
 local function combatTotals()
   for _, row in pairs(env.PinkasDB.chars["Testrealm/Testchar"].totals) do
-    if row.kind == "combat" then return row.value end
+    if row.kind == "combat" then
+      return row.value
+    end
   end
 end
 
 test("combat reads only the player's own row, never in combat, never twice", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.meterSessions = { { sessionID = 1, durationSeconds = 19 } }
   world.meterSources[1] = { [0] = 146, [2] = 0, [7] = 51, [8] = 0 }
   world.inCombat = true
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   assert(combatTotals() == nil, "no read in combat")
   world.inCombat = false
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   local v = combatTotals()
   assert(v.damage == 146 and v.taken == 51 and v.fights == 1 and v.seconds == 19, "own row, once")
   assert(math.abs(v.best_dps - 146 / 19) < 1e-9)
 end)
 
+test("a meter the client doesn't serve counts as 0 instead of stalling every session", function()
+  newWorld()
+  load(nil)
+  login(true)
+  world.meterUnserved = { [8] = true }
+  world.meterSessions = { { sessionID = 1, durationSeconds = 12 } }
+  world.meterSources[1] = { [0] = 240 }
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
+  local v = combatTotals()
+  assert(v and v.fights == 1 and v.damage == 240 and v.avoidable == 0)
+end)
+
 test("meter session ids restart at a real login", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.meterSessions = { { sessionID = 5, durationSeconds = 4 } }
   world.meterSources[5] = { [0] = 10 }
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   local db = env.PinkasDB
   world.now = world.now + 3600
-  load(db); login(true)
+  load(db)
+  login(true)
   world.meterSessions = { { sessionID = 1, durationSeconds = 4 } }
   world.meterSources[1] = { [0] = 7 }
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   local found = false
   for _, row in pairs(env.PinkasDB.chars["Testrealm/Testchar"].totals) do
-    if row.kind == "combat" and row.session == world.now then found = row.value.damage == 7 end
+    if row.kind == "combat" and row.session == world.now then
+      found = row.value.damage == 7
+    end
   end
   assert(found, "session 1 after a relog is read")
 end)
 
 test("a secret meter value is never stored and the session is retried later", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.meterSessions = { { sessionID = 1, durationSeconds = 19 } }
   world.meterSources[1] = { [0] = 146 }
   world.secret = true
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   assert(combatTotals() == nil and env.PinkasDB.chars["Testrealm/Testchar"].session.lastMeterId == 0)
   world.secret = false
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   assert(combatTotals().damage == 146)
 end)
 
 test("an emptied unit on a loading screen never overwrites the cache", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   fire("PLAYER_LEAVING_WORLD")
   world.xp, world.xpMax, world.money = 0, 0, 0
-  fire("PLAYER_XP_UPDATE"); fire("PLAYER_MONEY"); fire("BAG_UPDATE_DELAYED")
+  fire("PLAYER_XP_UPDATE")
+  fire("PLAYER_MONEY")
+  fire("BAG_UPDATE_DELAYED")
   local c = env.PinkasDB.chars["Testrealm/Testchar"]
   assert(c.xp == 1664 and c.xp_max == 7600 and c.money == 1000)
 end)
 
 test("meter sessions are read in id order even when listed out of order", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.meterSessions = { { sessionID = 214, durationSeconds = 27 }, { sessionID = 213, durationSeconds = 19 } }
   world.meterSources[213] = { [0] = 146 }
   world.meterSources[214] = { [0] = 23 }
-  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0); runTimers()
+  fire("ADDON_RESTRICTION_STATE_CHANGED", 0, 0)
+  runTimers()
   local v = combatTotals()
   assert(v.fights == 2 and v.damage == 169, "both fights counted")
 end)
@@ -539,7 +759,9 @@ end)
 -- Levels -----------------------------------------------------------------------------------------
 
 test("time per level is the difference of /played level starts", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   fire("TIME_PLAYED_MSG", 2, 2)
   assert(world.playedShown == nil, "our own /played line is hidden in every chat window")
   runTimers()
@@ -553,7 +775,10 @@ test("time per level is the difference of /played level starts", function()
 end)
 
 test("a level with no seen start is left null", function()
-  newWorld(); load(nil); fire("PLAYER_LOGIN"); fire("PLAYER_ENTERING_WORLD", false, true)
+  newWorld()
+  load(nil)
+  fire("PLAYER_LOGIN")
+  fire("PLAYER_ENTERING_WORLD", false, true)
   fire("PLAYER_LEVEL_UP", 11)
   fire("TIME_PLAYED_MSG", 5000, 1)
   local e = env.PinkasDB.chars["Testrealm/Testchar"].events[1]
@@ -563,9 +788,13 @@ end)
 -- Events list ------------------------------------------------------------------------------------
 
 test("event ids grow, the list is capped, exported_at is set", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   ns.EVENT_CAP = 3
-  for q = 1, 5 do fire("QUEST_TURNED_IN", q, 10, 0) end
+  for q = 1, 5 do
+    fire("QUEST_TURNED_IN", q, 10, 0)
+  end
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
   assert(#events == 3 and events[1].id == 3 and events[3].id == 5)
   local export = logoutAndExport()
@@ -575,17 +804,22 @@ end)
 -- Dungeons and bank ------------------------------------------------------------------------------
 
 test("a dungeon run left open is closed at the next real login, not at a reload", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   world.inInstance, world.zone = true, "Ragefire Chasm"
   fire("ZONE_CHANGED_NEW_AREA")
   world.now = world.now + 300
   fire("PLAYER_LOGOUT")
   local db = env.PinkasDB
-  load(db); fire("PLAYER_LOGIN"); fire("PLAYER_ENTERING_WORLD", false, true)
+  load(db)
+  fire("PLAYER_LOGIN")
+  fire("PLAYER_ENTERING_WORLD", false, true)
   assert(#db.chars["Testrealm/Testchar"].events == 0, "a reload keeps the run open")
   db.chars["Testrealm/Testchar"].logout_at = world.now
   world.now = world.now + 3600
-  load(db); login(true)
+  load(db)
+  login(true)
   local e = db.chars["Testrealm/Testchar"].events[1]
   assert(e.kind == "dungeon" and e.value.ended_by_logout == true and e.value.duration == 300)
 end)
@@ -593,10 +827,91 @@ end)
 test("the bank is read from the tab containers, never the keyring", function()
   newWorld()
   world.bank = { [6] = { { itemID = 2318, stackCount = 4 } }, [-1] = { { itemID = 9999, stackCount = 1 } } }
-  load(nil); login(true)
+  load(nil)
+  login(true)
   fire("BANKFRAME_OPENED")
   local bank = env.PinkasDB.chars["Testrealm/Testchar"].bank
   assert(#bank.items == 1 and bank.items[1].id == 2318 and bank.as_of == world.now)
+end)
+
+test("two levels before one /played answer are two events, their times unknown", function()
+  newWorld()
+  load(nil)
+  login(true)
+  fire("TIME_PLAYED_MSG", 100, 100)
+  fire("PLAYER_LEVEL_UP", 2)
+  fire("PLAYER_LEVEL_UP", 3)
+  fire("TIME_PLAYED_MSG", 300, 1)
+  local events = env.PinkasDB.chars["Testrealm/Testchar"].events
+  assert(#events == 2 and events[1].value.level == 2 and events[2].value.level == 3)
+  assert(events[1].value.played_level == ns.NULL and events[2].value.played_level == ns.NULL)
+end)
+
+test("a damaged totals row is pruned at login and the character still exports", function()
+  newWorld()
+  load({ chars = { ["Testrealm/Testchar"] = { totals = { broken = "x", nosession = {} } } } })
+  login(true)
+  local totals = env.PinkasDB.chars["Testrealm/Testchar"].totals
+  assert(totals.broken == nil and totals.nosession == nil)
+  fire("PLAYER_LOGOUT")
+  assert(env.PinkasDB.export:find('"Testrealm/Testchar"', 1, true))
+end)
+
+-- Saved data and gathering ----------------------------------------------------------------------
+
+test("a damaged SavedVariables file starts empty instead of breaking the addon", function()
+  for _, damaged in ipairs({ "garbage", { chars = "x", routes = 5, faults = true } }) do
+    newWorld()
+    load(damaged)
+    login(true)
+    assert(type(env.PinkasDB.chars["Testrealm/Testchar"]) == "table")
+    fire("PLAYER_LOGOUT")
+    assert(env.PinkasDB.export:find('"v":1', 1, true), "the export still works")
+  end
+end)
+
+test("a damaged character entry is rebuilt, the rest is kept", function()
+  newWorld()
+  load({
+    chars = {
+      ["Testrealm/Testchar"] = { events = "x", totals = 3, nextEventId = "y" },
+      ["Testrealm/Alt"] = { name = "Alt" },
+    },
+  })
+  login(true)
+  local c = env.PinkasDB.chars["Testrealm/Testchar"]
+  assert(type(c.events) == "table" and type(c.totals) == "table" and c.nextEventId == 1)
+  assert(env.PinkasDB.chars["Testrealm/Alt"].name == "Alt")
+end)
+
+test("a damaged alt is left out of the export, the others still go", function()
+  newWorld()
+  load({
+    chars = { ["Testrealm/Broken"] = "x", ["Testrealm/Alt"] = { name = "Alt", realm = "Testrealm", events = 5 } },
+  })
+  login(true)
+  fire("PLAYER_LOGOUT")
+  local export = env.PinkasDB.export
+  assert(export:find('"Testrealm/Testchar"', 1, true), "the logged-in character is exported")
+  assert(not export:find("Broken", 1, true) and not export:find('"Testrealm/Alt"', 1, true))
+  assert(#env.PinkasDB.faults == 2, "both damaged entries are noted")
+end)
+
+test("only the player's own gathering casts count", function()
+  newWorld()
+  load(nil)
+  login(true)
+  fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 8613)
+  fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "cast-2", 8613)
+  fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-3", 133)
+  local counted = 0
+  for _, row in pairs(env.PinkasDB.chars["Testrealm/Testchar"].totals) do
+    if row.kind == "gather" then
+      assert(row.key == "skinning|Orgrimmar" and #row.value.spots == 1)
+      counted = counted + row.value.count
+    end
+  end
+  assert(counted == 1, "one skinning cast of the player's, not the party member's, not a fireball")
 end)
 
 -- Size -------------------------------------------------------------------------------------------
@@ -634,13 +949,28 @@ local function fullCharacter(n)
     local kind, value = "quest", { quest = 97908, xp = 2450, money = 3500 }
     local slot = i % 20
     if slot >= 12 and slot < 15 then
-      kind, value = "death", { zone = "Thousand Needles", map = 1441, x = 0.123456789, y = 0.987654321,
-        killer = "Galak Messenger", recap_id = 1234, level = 34 }
+      kind, value =
+        "death", {
+          zone = "Thousand Needles",
+          map = 1441,
+          x = 0.123456789,
+          y = 0.987654321,
+          killer = "Galak Messenger",
+          recap_id = 1234,
+          level = 34,
+        }
     elseif slot >= 15 and slot < 17 then
       kind, value = "mail", { to = "Testrealm/Alt" .. n, money = 0, items = items }
     elseif slot >= 17 and slot < 19 then
-      kind, value = "dungeon", { zone = "Scarlet Monastery", started = world.now, duration = 1800,
-        deaths = 2, ended_by_logout = false, level = 38 }
+      kind, value =
+        "dungeon", {
+          zone = "Scarlet Monastery",
+          started = world.now,
+          duration = 1800,
+          deaths = 2,
+          ended_by_logout = false,
+          level = 38,
+        }
     elseif slot == 19 then
       kind, value = "level", { level = 40, zone = "Desolace", played_total = 512345, played_level = 14321 }
     end
@@ -660,19 +990,40 @@ local function fullCharacter(n)
   for session = 1, 14 do
     for row = 1, 20 do
       local at = world.now - session * 86400
-      totals[at .. "|gold|label" .. row] = { session = at, kind = "gold", key = "label" .. row,
-        value = { ["in"] = 123456, out = 65432 } }
+      totals[at .. "|gold|label" .. row] =
+        { session = at, kind = "gold", key = "label" .. row, value = { ["in"] = 123456, out = 65432 } }
     end
   end
-  return { name = "Alt" .. n, realm = "Testrealm", class = "SHAMAN", race = "Orc", level = 60, xp = 0,
-    xp_max = 0, rested = 0, resting = true, money = 12345678, zone = "Orgrimmar", map = 1454,
-    x = 0.54, y = 0.68, played = { total = 1, level = 1, at = 1 }, professions = {},
-    bags = bags, bank = { as_of = world.now, items = bank }, mailbox = { as_of = world.now, mails = mails },
-    events = events, totals = totals, nextEventId = ns.EVENT_CAP + 1 }
+  return {
+    name = "Alt" .. n,
+    realm = "Testrealm",
+    class = "SHAMAN",
+    race = "Orc",
+    level = 60,
+    xp = 0,
+    xp_max = 0,
+    rested = 0,
+    resting = true,
+    money = 12345678,
+    zone = "Orgrimmar",
+    map = 1454,
+    x = 0.54,
+    y = 0.68,
+    played = { total = 1, level = 1, at = 1 },
+    professions = {},
+    bags = bags,
+    bank = { as_of = world.now, items = bank },
+    mailbox = { as_of = world.now, mails = mails },
+    events = events,
+    totals = totals,
+    nextEventId = ns.EVENT_CAP + 1,
+  }
 end
 
 test("a full account at the event cap stays well under the pull's 5 MB", function()
-  newWorld(); load(nil); login(true)
+  newWorld()
+  load(nil)
+  login(true)
   for n = 1, 8 do
     env.PinkasDB.chars["Testrealm/Alt" .. n] = fullCharacter(n)
   end
