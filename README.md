@@ -18,6 +18,16 @@ household of alts that feed each other materials.
 pinkas only reads files the game already writes, the way log uploaders do. It does not write into
 the game or automate play.
 
+## Running the page
+
+```sh
+python3 -m pinkas.web --hash-password   # once: the hash for PINKAS_PASSWORD_HASH
+python3 -m pinkas.web                   # serves on PINKAS_LISTEN, default 127.0.0.1:8094
+```
+
+Both read their settings from the environment (a systemd `EnvironmentFile`, or exported in the
+shell); [.env.example](.env.example) lists them.
+
 ## Status
 
 Early development.

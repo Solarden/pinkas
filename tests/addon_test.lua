@@ -188,6 +188,9 @@ local function makeEnv()
   e.GetRealmName = function()
     return world.realm
   end
+  e.GetBuildInfo = function()
+    return "1.60.1", "70450", "Oct 1 2026", 16001
+  end
   e.UnitClass = function()
     return "Shaman", "SHAMAN"
   end
@@ -454,14 +457,36 @@ end)
 
 test("a real logout exports the cache, not the emptied unit", function()
   newWorld()
-  world.bags = { [0] = { { itemID = 2318, stackCount = 11, itemName = "Light Leather" } } }
+  world.bags = {
+    [0] = {
+      {
+        itemID = 2318,
+        stackCount = 11,
+        itemName = "Light Leather",
+        hyperlink = "|cffffffff|Hitem:2318::|h[Light Leather]|h|r",
+      },
+    },
+  }
   load(nil)
   login(true)
-  local c = me(logoutAndExport())
+  local export = logoutAndExport()
+  assert(export.v == 2 and export.build == "1.60.1.70450", "contract version and game build")
+  local c = me(export)
   assert(c.xp == 1664 and c.xp_max == 7600 and c.money == 1000, "cache kept")
   assert(c.bags[1].id == 2318 and c.bags[1].count == 11 and c.bags[1].name == "Light Leather")
   assert(c.logout_at == world.now and c.rested == 892 and c.resting == true)
   assert(c.professions[1].skill_line == 393 and c.professions[1].rank == 75)
+end)
+
+test("a client without a build still writes the export", function()
+  newWorld()
+  load(nil)
+  env.GetBuildInfo = function() end
+  login(true)
+  assert(logoutAndExport().build == "nil.nil")
+  env.GetBuildInfo = nil
+  env.PinkasDB.export = nil
+  assert(logoutAndExport().build == "nil.nil", "nor without the function")
 end)
 
 test("every contract key is present, unknown ones as null", function()
@@ -798,7 +823,7 @@ test("event ids grow, the list is capped, exported_at is set", function()
   local events = env.PinkasDB.chars["Testrealm/Testchar"].events
   assert(#events == 3 and events[1].id == 3 and events[3].id == 5)
   local export = logoutAndExport()
-  assert(export.exported_at == world.now and export.v == 1)
+  assert(export.exported_at == world.now and export.v == 2)
 end)
 
 -- Dungeons and bank ------------------------------------------------------------------------------
@@ -866,7 +891,7 @@ test("a damaged SavedVariables file starts empty instead of breaking the addon",
     login(true)
     assert(type(env.PinkasDB.chars["Testrealm/Testchar"]) == "table")
     fire("PLAYER_LOGOUT")
-    assert(env.PinkasDB.export:find('"v":1', 1, true), "the export still works")
+    assert(env.PinkasDB.export:find('"v":2', 1, true), "the export still works")
   end
 end)
 

@@ -8,7 +8,7 @@ def test_the_beta_file_parses():
     export = account()
     char = export["chars"][KEY]
 
-    assert export["v"] == 1
+    assert (export["v"], export["build"], export["routes"]) == (2, "1.60.1.70450", {})
     assert (char["class"], char["level"], char["xp_max"]) == ("SHAMAN", 10, 7600)
     assert char["bags"][0] == {"id": 6948, "name": "Hearthstone", "count": 1}
     assert char["bank"] is None and char["events"] == []
@@ -62,7 +62,11 @@ def changed(edit) -> bytes:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda e, c: e.update(v=2), "contract version"),
+        (lambda e, c: e.update(v=1), "contract version"),
+        (lambda e, c: e.pop("build"), "export: the keys differ"),
+        (lambda e, c: e.update(build=70450), r"export\.build: expected str"),
+        (lambda e, c: e.update(routes={"herb": "Alt", "gems": "Alt"}), r"export\.routes\[1\]: an unknown kind"),
+        (lambda e, c: e.update(routes={"herb": 1}), r"export\.routes\[0\]: expected str"),
         (lambda e, c: c.pop("money"), r"chars\[0\]: the keys differ"),
         (lambda e, c: c.update(extra=1), r"chars\[0\]: the keys differ"),
         (lambda e, c: c.update(level="10"), r"chars\[0\]\.level: expected int"),
@@ -76,7 +80,8 @@ def changed(edit) -> bytes:
         ),
     ],
     ids=[
-        "version", "missing key", "extra key", "string level", "int bool", "bool count", "unknown kind",
+        "version", "no build", "numeric build", "unknown route kind", "numeric recipient", "missing key",
+        "extra key", "string level", "int bool", "bool count", "unknown kind",
         "key mismatch", "duplicate total",
     ],
 )

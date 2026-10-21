@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}pinkas{% endblock %}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📒%3C/text%3E%3C/svg%3E">
+<style>
+/* skin:begin — generated from skin/skin.css in the owner's infra repo; edit it there, then run skin/sync.py --write */
+:root{--bg:#0f1115;--panel:#1a1d24;--line:#2a2f3a;--fg:#e6e9ef;--muted:#9aa3b2;
+--accent:#4f8cff;--accent-strong:#3366cc;--field-border:#6b7280;--neg:#f0686b;--pos:#3fb950;
+--warn:#d29922;--sans:system-ui,-apple-system,sans-serif;
+--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);color-scheme:dark;
+font-family:var(--sans);font-size:15px;line-height:1.5}
+header{border-bottom:1px solid var(--line)}
+header h1{margin:0;font-size:1rem}
+footer{border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center}
+label{color:var(--muted);font-size:13px}
+input,select,textarea,button{border:1px solid var(--field-border);border-radius:.375rem;
+background:var(--bg);color:var(--fg);font:inherit}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{cursor:pointer;border-color:var(--accent-strong);background:var(--accent-strong);color:#fff;font-weight:600}
+:where(button:not(:disabled)):hover{border-color:var(--accent);background:var(--accent)}
+button:disabled{opacity:.5;cursor:not-allowed}
+table{border-collapse:collapse;width:100%}
+th,td{border-bottom:1px solid var(--line);text-align:left}
+th{font-size:13px;font-weight:600;color:var(--muted)}
+.panel{border:1px solid var(--line);border-radius:.5rem;background:var(--panel)}
+.muted{color:var(--muted)}
+.pos{color:var(--pos)}.neg{color:var(--neg)}.warn{color:var(--warn)}
+.pill{display:inline-block;padding:.05rem .4rem;border:1px solid currentColor;border-radius:.375rem;
+font-size:11px;font-weight:600;white-space:nowrap}
+.flash.error{border:1px solid var(--neg);border-radius:.375rem;background:#3a1c1e;color:#ffd5d6}
+/* skin:end */
+body{font-size:16px}
+header{display:flex;align-items:baseline;gap:1rem;padding:.75rem 1rem}
+header h1 a{color:inherit;text-decoration:none}
+header form{margin:0 0 0 auto}
+header button.linkish{padding:0;border:0;background:none;color:var(--muted);font-size:13px;font-weight:400;text-decoration:underline}
+main{max-width:860px;margin:0 auto;padding:1rem}
+a{color:var(--accent)}
+h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:1.25rem 0 .4rem}
+.panel{padding:.75rem;margin-bottom:.6rem}
+.panel h2{margin-top:0}
+button{min-height:2.75rem;padding:0 .9rem}
+button.quiet{background:var(--bg);border-color:var(--field-border);color:var(--fg);font-weight:400}
+.field{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.8rem}
+input{min-height:2.75rem;padding:0 .7rem;width:100%}
+.flash{padding:.7rem 1rem;margin-bottom:1rem}
+.char .top{display:flex;align-items:center;gap:.6rem}
+.char .who{flex:1;min-width:0;overflow-wrap:anywhere}
+.char .name{font-weight:600;font-size:1.05rem;text-decoration:none}
+.char form{margin:0}
+.char.playing{border-color:var(--accent)}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.3rem .9rem;margin-top:.5rem;font-size:14px}
+.facts > div{min-width:0;overflow-wrap:anywhere}
+.facts .label{display:block;color:var(--muted);font-size:12px}
+meter{width:100%;height:.6rem}
+ul.plain{list-style:none;margin:0;padding:0}
+ul.plain li{padding:.2rem 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+ul.plain li:last-child{border-bottom:0}
+.count{float:right;font-variant-numeric:tabular-nums;color:var(--muted);margin-left:.5rem}
+details.nerd{max-width:860px;margin:1.5rem auto;padding:0 1rem 1rem;color:var(--muted);font-size:13px}
+details.nerd summary{cursor:pointer}
+details.nerd dl{display:grid;grid-template-columns:max-content 1fr;gap:.2rem .8rem;margin:.6rem 0}
+details.nerd dt{color:var(--muted)}
+details.nerd dd{margin:0;color:var(--fg);font-family:var(--mono);overflow-wrap:anywhere}
+details.nerd pre{max-height:24rem;overflow:auto;padding:.6rem;font-size:12px;color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<header><h1><a href="/">pinkas</a></h1>{% if token %}<form method="post" action="/logout"><input type="hidden" name="t" value="{{ token }}"><button class="linkish">log out</button></form>{% endif %}</header>
+<main>{% block main %}{% endblock %}</main>
+{% if nerd %}
+<details class="nerd">
+<summary>Stats for nerds</summary>
+<dl>
+<dt>last pull</dt><dd>{% if nerd.status %}{{ nerd.status }} since {{ nerd.since|local }}{% else %}none yet{% endif %}</dd>
+<dt>newest file</dt><dd>{% if nerd.sha256 %}{{ nerd.sha256 }}, {{ nerd.size }} bytes, fetched {{ nerd.fetched_at|local }}{% else %}none{% endif %}</dd>
+<dt>snapshots</dt><dd>{{ nerd.snapshots }}</dd>
+<dt>events</dt><dd>{{ nerd.events }}</dd>
+<dt>export version</dt><dd>{{ nerd.export.v or "—" }}</dd>
+<dt>game build</dt><dd>{{ nerd.export.build or "—" }}</dd>
+<dt>rested</dt><dd>{{ (rested.share * 100)|round(1) }}% of the bar per {{ rested.hours }} h resting, ×{{ rested.elsewhere }} elsewhere, cap {{ rested.cap }} bars, +{{ (rested.per_rank * 100)|round(1) }}% a Well Rested rank, none at {{ rested.max_level }}</dd>
+{% block nerd_more %}{% endblock %}
+</dl>
+{% block nerd_raw %}{% endblock %}
+</details>
+{% endif %}
+</body>
+</html>

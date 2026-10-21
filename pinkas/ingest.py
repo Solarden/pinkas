@@ -9,6 +9,9 @@ from pinkas.parse import ParseError, parse
 
 # These have tables of their own; copying them into every snapshot would repeat up to 500 events.
 NOT_IN_SNAPSHOT = ("events", "totals")
+# The export's account-wide fields, kept with each snapshot as "export": the page reads the routes,
+# version and build from the newest one, and raw files are purged after 30 days.
+EXPORT_IN_SNAPSHOT = ("v", "build", "routes")
 
 
 def ts(epoch: int | None) -> datetime | None:
@@ -44,6 +47,7 @@ def ingest(conn, body: bytes, fetched_at: datetime) -> dict:
 
         file_id = row[0]
         exported_at = ts(export["exported_at"])
+        account = {k: export[k] for k in EXPORT_IN_SNAPSHOT}
         counts = {
             "sha256": sha256, "unchanged": False,
             "characters": 0, "snapshots": 0, "events": 0, "totals": 0, "skipped": 0,
@@ -69,7 +73,8 @@ def ingest(conn, body: bytes, fetched_at: datetime) -> dict:
                 " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
                 (
                     character_id, ts(char["logout_at"]), ts(char["session_started_at"]),
-                    Json({k: v for k, v in char.items() if k not in NOT_IN_SNAPSHOT}), file_id,
+                    Json({**{k: v for k, v in char.items() if k not in NOT_IN_SNAPSHOT}, "export": account}),
+                    file_id,
                 ),
             )
             counts["snapshots"] += cur.rowcount

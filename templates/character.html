@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ c.name }} — pinkas{% endblock %}
+{% macro items(list) %}<ul class="plain">{% for it in list %}<li>{{ it.name or "item " ~ it.id }}<span class="count">{{ it.count }}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>{% endmacro %}
+{% block main %}
+<h2>{{ c.name }} · {{ c.realm }}</h2>
+<p class="muted">Level {{ data.level if data.level is not none else "?" }} {{ (data.class or "")|title }}, {{ data.zone or "somewhere" }}, {{ data.money|gold }}.
+{% if c.playing %}Playing now.{% else %}Last seen <span title="{{ c.logout_at|local }}">{{ c.logout_at|ago }}</span>.{% endif %}</p>
+<section class="panel"><h2>Professions</h2>
+<ul class="plain">{% for p in data.professions %}<li>{{ p.name or "?" }}<span class="count">{{ p.rank if p.rank is not none else "?" }}/{{ p.max if p.max is not none else "?" }}</span></li>{% else %}<li class="muted">none</li>{% endfor %}</ul></section>
+<section class="panel"><h2>Bags</h2>{{ items(bags) }}</section>
+<section class="panel"><h2>Bank{% if data.bank %}, as of <span title="{{ data.bank.as_of|epoch|local }}">{{ data.bank.as_of|epoch|ago }}</span>{% endif %}</h2>
+{% if bank is not none %}{{ items(bank) }}{% else %}<p class="muted">Not seen yet: open the bank in game.</p>{% endif %}</section>
+<section class="panel"><h2>Mailbox{% if data.mailbox %}, as of <span title="{{ data.mailbox.as_of|epoch|local }}">{{ data.mailbox.as_of|epoch|ago }}</span>{% endif %}</h2>
+{% if data.mailbox %}<ul class="plain">{% for m in data.mailbox.mails %}<li>from {{ m.from }}{% if m.money %}, {{ m.money|gold }}{% endif %}{% for it in m["items"] %}{% if loop.first %}: {% endif %}{{ it.name or "item " ~ it.id }} ×{{ it.count }}{% if not loop.last %}, {% endif %}{% endfor %}</li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>
+{% else %}<p class="muted">Not seen yet: open the mailbox in game.</p>{% endif %}</section>
+{% endblock %}
+{% block nerd_more %}<dt>Well Rested rank</dt><dd>{{ c.well_rested_rank }}</dd>{% endblock %}
+{% block nerd_raw %}<p>Newest snapshot, logged out {{ c.logout_at|local }}:</p><pre>{{ raw }}</pre>{% endblock %}

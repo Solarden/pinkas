@@ -137,7 +137,19 @@ function ns.buildExport()
     end
   end
 
-  return ns.json({ v = ns.EXPORT_VERSION, exported_at = time(), routes = PinkasDB.routes, chars = chars })
+  local version, build
+  if GetBuildInfo then
+    version, build = GetBuildInfo()
+  end
+
+  return ns.json({
+    v = ns.EXPORT_VERSION,
+    exported_at = time(),
+    -- tostring(): a nil from the client must not cost the whole export.
+    build = tostring(version) .. "." .. tostring(build),
+    routes = PinkasDB.routes,
+    chars = chars,
+  })
 end
 
 -- A real logout has already emptied the unit, so nothing is read from the game here.

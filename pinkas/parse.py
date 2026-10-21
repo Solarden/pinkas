@@ -12,6 +12,8 @@ EXPORT_PREFIX = b'["export"] = "'
 
 EVENT_KINDS = {"level", "death", "quest", "mail", "dungeon"}
 TOTAL_KINDS = {"gold", "combat", "gather", "rested"}
+# In the order the page lists them.
+ROUTE_KINDS = ("herb", "cloth", "leather", "ore", "enchanting")
 
 
 class ParseError(ValueError):
@@ -168,9 +170,15 @@ def parse(body: bytes) -> dict:
     except RecursionError:
         raise ParseError("the export is nested too deeply") from None
 
-    check(export, {"v": INT, "exported_at": INT, "routes": OBJ, "chars": OBJ}, "export")
-    if export["v"] != 1:
+    check(export, {"v": INT, "exported_at": INT, "build": STR, "routes": OBJ, "chars": OBJ}, "export")
+    if export["v"] != 2:
         raise ParseError("export.v: an unknown contract version")
+
+    for i, (kind, recipient) in enumerate(export["routes"].items()):
+        if kind not in ROUTE_KINDS:
+            raise ParseError(f"export.routes[{i}]: an unknown kind")
+        if not isinstance(recipient, str):
+            raise ParseError(f"export.routes[{i}]: expected str")
 
     # Characters are addressed by position: their keys are names.
     for i, (key, char) in enumerate(export["chars"].items()):

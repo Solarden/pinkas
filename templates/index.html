@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block main %}
+{% if playing %}
+<section class="panel">
+<h2>Playing {{ playing.name }}: mail</h2>
+{% if routes %}<ul class="plain">{% for kind, recipient in routes %}<li>{{ kind }} → {{ recipient }}</li>{% endfor %}</ul>
+{% else %}<p class="muted">No route to another character. Set one in game: /pinkas route &lt;kind&gt; &lt;Name&gt;</p>{% endif %}
+</section>
+{% endif %}
+{% for c in characters %}
+<article class="panel char{% if c.playing %} playing{% endif %}">
+<div class="top">
+  <div class="who"><a class="name" href="/c/{{ c.realm|pathpart }}/{{ c.name|pathpart }}">{{ c.name }}</a>
+    <span class="muted">{{ c.level if c.level is not none else "?" }} {{ (c.class or "")|title }} · {{ c.realm }}</span></div>
+  <form method="post" action="/playing"><input type="hidden" name="t" value="{{ token }}"><input type="hidden" name="character" value="{% if not c.playing %}{{ c.id }}{% endif %}"><button class="quiet" aria-label="{{ 'Stop playing' if c.playing else 'Play' }} {{ c.name }}">{{ "Stop" if c.playing else "Play" }}</button></form>
+</div>
+<div class="facts">
+  <div><span class="label">rested</span>
+    {% if c.level is not none and c.level >= rested.max_level %}—
+    {% elif c.rested is none %}?
+    {% else %}<meter min="0" max="{{ c.cap }}" value="{{ c.rested }}" aria-label="rested XP of {{ c.name }}"></meter>
+      {{ c.bar_pct }}% of a level{% if c.playing %}, playing{% elif c.full_in == 0 %}, full{% elif c.full_in is not none %}, full in {{ c.full_in|duration }}{% endif %}
+    {% endif %}</div>
+  <div><span class="label">professions</span>
+    {% for p in c.professions %}{{ p.name or "?" }} {{ p.rank if p.rank is not none else "?" }}/{{ p.max if p.max is not none else "?" }}{% if p.target %} → {{ p.target }}{% endif %}{% if not loop.last %}, {% endif %}{% else %}none{% endfor %}</div>
+  <div><span class="label">gold</span>{{ c.money|gold }}</div>
+  <div><span class="label">last seen</span>{% if c.playing %}playing{% else %}<span title="{{ c.logout_at|local }}">{{ c.logout_at|ago }}</span>{% endif %}</div>
+</div>
+</article>
+{% else %}
+<p class="muted">No characters yet. One appears after its first logout with the addon has been pulled.</p>
+{% endfor %}
+{% endblock %}
+{% block nerd_more %}<dt>Well Rested rank</dt><dd>{% for c in characters %}{{ c.name }} {{ c.well_rested_rank }}{% if not loop.last %}, {% endif %}{% else %}—{% endfor %}</dd>{% endblock %}
