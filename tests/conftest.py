@@ -3,10 +3,15 @@
 Only the tests that use `database`, `conn` or `owner` need it; the parser and rested tests run without one.
 """
 
+import http.server
+import threading
+
 import psycopg2
 import pytest
 
+from pinkas import web
 from tests.db import DSN, migrate
+from tests.web_client import CONF, Client
 
 TABLES = (
     "pinkas_session_totals, pinkas_events, pinkas_snapshots, pinkas_targets, pinkas_pull_state,"
@@ -56,3 +61,35 @@ def conn(database):
 def owner(database):
     """The table owner's connection, for reading back what the app role may not."""
     return database
+
+
+@pytest.fixture
+def client(conn, monkeypatch):
+    def as_app_role(dsn: str):
+        c = psycopg2.connect(dsn)
+
+        with c.cursor() as cur:
+            cur.execute("SET ROLE pinkas")
+
+        c.commit()
+
+        return c
+
+    monkeypatch.setattr(web, "connect", as_app_role)
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+    server.conf = CONF
+    server.stats_cache = {}
+    # A short poll, so shutdown() doesn't wait the default half second per test.
+    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
+    client = Client(server.server_address[1])
+    client.server = server
+    yield client
+    server.shutdown()
+    server.server_close()
+
+
+@pytest.fixture
+def logged_in(client):
+    client.login()
+
+    return client

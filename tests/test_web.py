@@ -1,6 +1,5 @@
 import copy
 import http.client
-import http.server
 import json
 import re
 import socket
@@ -8,98 +7,19 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import NamedTuple
 from urllib.parse import quote, urlencode
 
 import psycopg2
 import pytest
 
-from pinkas import web
+from pinkas import stats, web
 from pinkas.ingest import ingest
 from tests.db import DSN
 from tests.files import KEY, account, account_v3, fixture, with_export
+from tests.web_client import CONF, PASSWORD, TOKEN, XSS, XSS_ESCAPED, Client
 
-PASSWORD = "correct horse"
-CONF = web.Config(DSN, "test-secret", web.hash_password(PASSWORD))
-TOKEN = web.form_token(CONF)
 FETCHED = datetime(2026, 10, 21, 10, 30, tzinfo=UTC)
 NERD = "Stats for nerds"
-XSS = "</script><img src=x onerror=alert(1)>"
-XSS_ESCAPED = "&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;"
-
-
-class Response(NamedTuple):
-    status: int
-    headers: http.client.HTTPMessage
-    body: str
-
-
-class Client:
-    def __init__(self, port: int):
-        self.port = port
-        self.cookie: str | None = None
-
-    def request(self, method: str, path: str, form: dict | None = None, cookie: str | None = None) -> Response:
-        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
-        headers = {}
-
-        if cookie or self.cookie:
-            headers["Cookie"] = cookie or self.cookie
-
-        body = None
-
-        if form is not None:
-            body = urlencode(form)
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-
-        conn.request(method, path, body=body, headers=headers)
-        response = conn.getresponse()
-        result = Response(response.status, response.headers, response.read().decode())
-        conn.close()
-
-        return result
-
-    def get(self, path: str, **kw) -> Response:
-        return self.request("GET", path, **kw)
-
-    def post(self, path: str, form: dict, **kw) -> Response:
-        return self.request("POST", path, form, **kw)
-
-    def login(self) -> None:
-        response = self.post("/login", {"password": PASSWORD, "next": "/"})
-        assert response.status == 303
-        self.cookie = response.headers["Set-Cookie"].split(";")[0]
-
-
-@pytest.fixture
-def client(conn, monkeypatch):
-    def as_app_role(dsn: str):
-        c = psycopg2.connect(dsn)
-
-        with c.cursor() as cur:
-            cur.execute("SET ROLE pinkas")
-
-        c.commit()
-
-        return c
-
-    monkeypatch.setattr(web, "connect", as_app_role)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
-    server.conf = CONF
-    # A short poll, so shutdown() doesn't wait the default half second per test.
-    threading.Thread(target=server.serve_forever, args=(0.01,), daemon=True).start()
-    client = Client(server.server_address[1])
-    client.server = server
-    yield client
-    server.shutdown()
-    server.server_close()
-
-
-@pytest.fixture
-def logged_in(client):
-    client.login()
-
-    return client
 
 
 def store(conn, export: dict) -> None:
@@ -206,6 +126,7 @@ def test_a_forged_cookie_with_the_right_secret_works(client, conn):
         ("/search", "/search"),
         ("/guide", "/guide"),
         ("/settings", "/settings"),
+        ("/stats", "/stats"),
         ("/settingsx", "/"),
     ],
 )
@@ -294,7 +215,7 @@ def test_an_unknown_character_cannot_play(logged_in, conn, owner, chosen):
     assert playing(owner) == []
 
 
-PLAYING = '<span class="pill now">playing</span>'
+PLAYING = '<span class="pill pos">playing</span>'
 
 
 def test_the_playing_character_sits_on_top(logged_in, conn, owner):
@@ -409,7 +330,7 @@ def test_an_unknown_page_is_404(logged_in, conn, path):
 def test_the_nerd_panel_shows_after_login(logged_in, conn):
     ingest(conn, fixture("fake_account.lua"), FETCHED)
     index, character, missing, *others = (
-        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide", "/settings")
+        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide", "/settings", "/stats")
     )
 
     for response in (index, character, missing, *others):
@@ -452,7 +373,17 @@ def test_game_strings_stay_inert(logged_in, conn, owner, tmp_path):
     char["bank"] = {"as_of": 1792570000, "items": [{"id": 1, "name": XSS, "count": 1}]}
     mail = {"from": XSS, "money": 0, "items": [{"id": 1, "name": XSS, "count": 1}]}
     char["mailbox"] = {"as_of": 1792570000, "mails": [mail]}
-    char["events"] = [{"id": 1, "at": 1792570500, "kind": "death", "value": {"killer": XSS}}]
+    char["events"] = [
+        {"id": 1, "at": 1792570500, "kind": "death", "value": {"killer": XSS, "zone": XSS, "level": 10}},
+        {"id": 2, "at": 1792570600, "kind": "dungeon",
+         "value": {"instance": XSS, "level": 10, "started": 1792570000, "duration": 600, "deaths": 0, "ended_by_logout": False}},
+    ]
+    char["totals"] = [{"session": char["session_started_at"], "kind": "gather", "key": f"skinning|{XSS}", "value": {"count": 2}},
+                      {"session": char["session_started_at"], "kind": "gold", "key": XSS, "value": {"in": 5}}]
+    # Altchar mails the hostile character an item with a hostile name; the recipient reaches the Sankey.
+    export["chars"]["Testrealm/Altchar"]["events"] = [
+        {"id": 1, "at": 1792570700, "kind": "mail", "value": {"to": f"Testrealm/{XSS}", "items": [{"id": 9, "name": XSS, "count": 3}]}},
+    ]
     export["chars"][f"Testrealm/{XSS}"] = char
     export["routes"] = {"herb": XSS}
     store(conn, export)
@@ -470,9 +401,15 @@ def test_game_strings_stay_inert(logged_in, conn, owner, tmp_path):
     search = logged_in.get("/search?" + urlencode({"q": XSS})).body
     settings = logged_in.get("/settings").body
     handbook = logged_in.get("/guide").body
+    charts = logged_in.get("/stats?range=all").body
 
-    for body in (index, character, search, settings, handbook):
+    for body in (index, character, search, settings, handbook, charts):
         assert XSS not in body and "<img" not in body
+
+    assert charts.count(XSS_ESCAPED) >= 7, "killers, zones, gathering, dungeons, gold sources, the Sankey, legends"
+    block = charts.split('<script type="application/json" id="charts">')[1].split("</script>")[0]
+
+    assert "<" not in block and XSS in json.dumps(json.loads(block), ensure_ascii=False), "the readout's names, inert"
 
     assert search.count(XSS_ESCAPED) >= 3, "the item, its character and the query in the box"
     assert settings.count(XSS_ESCAPED) >= 2, "the name and the role"
@@ -636,7 +573,7 @@ def test_search_counts_per_character_and_container(logged_in, conn):
     store(conn, export)
     body = searched(logged_in, "LINEN")
 
-    assert '<h2><span class="n">Linen Cloth</span><span class="sr">: </span><span class="count">70</span></h2>' in body, (
+    assert '<h3><span class="n">Linen Cloth</span><span class="sr">: </span><span class="count">70</span></h3>' in body, (
         "32 + 6 + 32"
     )
     assert "bags 32 · mailbox 6" in body and body.count("bags 32") == 2
@@ -702,7 +639,7 @@ def test_the_guide_renders_markdown_without_unsafe_links(logged_in, tmp_path):
     logged_in.server.conf = CONF._replace(guide=str(guide))
     body = logged_in.get("/guide").body
 
-    assert "<h1>Alts</h1>" in body and body.count("<h1") == 1 and "<td>Tailoring</td>" in body
+    assert "<h1>Guide</h1>" in body and "<h2>Alts</h2>" in body and body.count("<h1") == 1 and "<td>Tailoring</td>" in body
     assert '<div class="table-box" tabindex="0" role="region" aria-label="Alts">\n<table>' in body
     assert '<a href="https://example.com">ok</a>' in body and 'href="javascript:' not in body
     assert '<li class="task">☐ open</li>' in body and '<li class="task">☑ done</li>' in body
@@ -831,7 +768,7 @@ def test_a_met_target_is_ticked_and_a_planned_one_listed(logged_in, conn, owner)
 
     body = logged_in.get("/c/Testrealm/Fakechar").body
 
-    assert '<div class="prof met"><span class="n">Skinning</span><span class="count">150 ✓</span>' in body
+    assert '<div class="prof met"><span class="n">Skinning</span><span class="count">150 · met</span>' in body
     assert '<span class="n">Tailoring</span><span class="note">planned, not learned · up to 150' in body
 
 
@@ -922,7 +859,7 @@ def test_the_character_page_opens_the_guide_beside_it(logged_in, conn, tmp_path)
 
 
 def card(body: str, name: str) -> str:
-    return body.split(f">{name}</a></h2>")[1].split("</article>")[0]
+    return body.split(f">{name}</a></h3>")[1].split("</article>")[0]
 
 
 @pytest.mark.parametrize(
@@ -940,7 +877,7 @@ def test_the_most_rested_character_is_next_up(logged_in, conn, owner, alt, play,
 
     body = logged_in.get("/").body
 
-    assert body.count("next up") == 1 and '<span class="pill pos">next up</span>' in card(body, expected)
+    assert body.count("next up") == 1 and '<span class="pill muted">next up</span>' in card(body, expected)
 
 
 def test_the_cards_carry_their_sort_keys_for_the_script(logged_in, conn, owner):
@@ -969,11 +906,14 @@ def test_the_only_script_is_the_apps_own_file(logged_in, conn):
     assert script.body == (web.ROOT / "static" / "pinkas.js").read_text(encoding="utf-8")
     assert script.headers["Content-Security-Policy"].startswith("default-src 'none'; script-src 'self';")
 
-    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings", "/guide", "/nothing"):
+    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing"):
         tags = re.findall(r"<script[^>]*>", logged_in.get(path).body)
 
         assert '<script src="/static/pinkas.js" defer>' in tags
-        assert set(tags) <= {'<script src="/static/pinkas.js" defer>', '<script type="application/json" id="cards">'}
+        assert set(tags) <= {
+            '<script src="/static/pinkas.js" defer>', '<script type="application/json" id="cards">',
+            '<script type="application/json" id="charts">',
+        }
 
 
 def test_the_script_is_revalidated_while_pages_are_never_stored(logged_in, conn):
@@ -991,7 +931,7 @@ def test_the_script_is_revalidated_while_pages_are_never_stored(logged_in, conn)
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings", "/guide", "/nothing", "/login"]
+    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing", "/login"]
 )
 def test_every_page_has_one_h1(logged_in, conn, path):
     store(conn, account())
@@ -1135,3 +1075,100 @@ def test_an_item_also_in_the_mail_keeps_its_quality_in_search(logged_in, conn):
     store(conn, export)
 
     assert '<span class="n q2">Wolf Bracers' in searched(logged_in, "bracers")
+
+
+# /stats ------------------------------------------------------------------------------------------
+
+
+def test_stats_needs_a_session(client, conn):
+    response = client.get("/stats?range=30")
+
+    assert response.status == 303 and response.headers["Location"] == "/login?next=/stats"
+
+
+def test_stats_is_computed_once_until_its_data_changes(logged_in, conn, owner, monkeypatch):
+    computed = []
+    collect = stats.collect
+
+    def counted(cur, key, now, tz=None):
+        computed.append(key)
+
+        return collect(cur, key, now, tz)
+
+    class Tomorrow(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime.now(tz) + timedelta(days=1)
+
+    monkeypatch.setattr(stats, "collect", counted)
+    store(conn, account())
+    logged_in.get("/stats")
+    logged_in.get("/stats")
+    logged_in.get("/stats?range=all")
+    later = account()
+    later["chars"][KEY]["logout_at"] += 3600
+    store(conn, later)
+    logged_in.get("/stats")
+
+    with owner.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET role = 'main'")
+
+    logged_in.get("/stats")
+    monkeypatch.setattr(web, "datetime", Tomorrow)
+    logged_in.get("/stats")
+
+    assert computed == ["90", "all", "90", "90", "90"], "a new file, a role and a new day each recompute"
+
+
+@pytest.mark.parametrize(("query", "shown"), [("", "90"), ("?range=30", "30"), ("?range=all", "all"), ("?range=7", "90"),
+                                              ("?range=%27%3B--", "90")])
+def test_the_range_row_marks_the_range_shown(logged_in, conn, query, shown):
+    store(conn, account())
+    body = logged_in.get("/stats" + query).body
+
+    assert f'<a href="/stats?range={shown}" aria-current="page">' in body and body.count('aria-current="page"') == 1
+
+
+def test_an_empty_account_says_what_is_missing(logged_in, conn):
+    body = logged_in.get("/stats").body
+
+    assert "No deaths in this range." in body and "No mail between your characters in this range." in body
+    assert NERD in body
+
+
+def test_another_players_kill_reads_player(logged_in, conn):
+    export = account()
+    export["chars"][KEY]["events"] = [
+        {"id": 1, "at": 1792570500, "kind": "death", "value": {"killer": "player", "zone": "Durotar", "level": 10}},
+        {"id": 2, "at": 1792570501, "kind": "death", "value": {"killer": None, "zone": "Durotar", "level": 10}},
+    ]
+    store(conn, export)
+    body = logged_in.get("/stats?range=all").body
+
+    assert '<span class="n">player</span>' in body and '<span class="n">unknown</span>' in body
+
+
+def test_the_character_page_has_its_sparklines(logged_in, conn):
+    store(conn, account())
+    body = logged_in.get("/c/Testrealm/Fakechar").body
+
+    assert body.count('<div class="spark">') == 2 and '<a href="/stats">More on stats</a>' in body
+
+
+def test_a_ranked_list_is_scaled_by_its_largest_row():
+    rows = str(web.TEMPLATES.get_template("_charts.html").module.ranked([("Durotar", 3), ("other", 20)], "Deaths"))
+
+    assert rows.count('max="20"') == 2, "the folded tail is larger than the first zone"
+
+
+@pytest.mark.parametrize(("seconds", "text"), [(None, "—"), (89, "1 min"), (3_590, "1 h 0 min"), (4_380, "1 h 13 min")])
+def test_minutes(seconds, text):
+    assert web.minutes(seconds) == text
+
+
+def test_search_sums_stacks_past_int(logged_in, conn):
+    export = with_alt()
+    export["chars"][KEY]["bags"] = [{"id": 2589, "name": "Linen Cloth", "count": 2**31 - 1}] * 2
+    store(conn, export)
+
+    assert str(2 * (2**31 - 1)) in searched(logged_in, "linen")

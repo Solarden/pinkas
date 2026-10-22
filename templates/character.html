@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import stats, prof, as_of, name %}
+{% import "_charts.html" as chart %}
 {% block title %}{{ c.name }} — pinkas{% endblock %}
 {% macro items(list) %}<ul class="plain">{% for it in list %}<li>{{ name(it) }}<span class="count">{{ it.count }}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>{% endmacro %}
 {% macro groups(list) %}{% for g in list %}<div class="group"><span class="label"><span>{{ g.label }}{% if g.who %} <a href="/c/{{ c.realm|pathpart }}/{{ g.who|pathpart }}">{{ g.to }}</a>{% elif g.to %} {{ g.to }}{% endif %}</span><span>{{ g.slots }} slot{% if g.slots != 1 %}s{% endif %}</span></span>
@@ -18,6 +19,9 @@
 <section class="panel">
 <h2>Next level</h2>
 {{ stats(c) }}
+{{ chart.spark("Level, 30 days", history.level.spark, history.level.now, history.level.change) }}
+{{ chart.spark("Gold, 30 days", history.gold.spark, history.gold.now, history.gold.change) }}
+<p class="muted note"><a href="/stats">More on stats</a></p>
 </section>
 
 <section class="panel">

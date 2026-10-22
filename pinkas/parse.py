@@ -6,14 +6,18 @@ a log.
 """
 
 import json
+from typing import Annotated, Literal, TypedDict, Union
+
+from pydantic import ConfigDict, Field, TypeAdapter, ValidationError, with_config
 
 MAX_BYTES = 5_000_000
 EXPORT_PREFIX = b'["export"] = "'
 
-EVENT_KINDS = {"level", "death", "quest", "mail", "dungeon"}
-TOTAL_KINDS = {"gold", "combat", "gather", "rested"}
 # In the order the page lists them.
 ROUTE_KINDS = ("herb", "cloth", "leather", "ore", "enchanting")
+# Trade-goods (class 7) subclasses per route kind, the pairs addon/Pinkas/Routes.lua matches in game.
+KIND_OF = {(7, 9): "herb", (7, 5): "cloth", (7, 6): "leather", (7, 7): "ore", (7, 12): "enchanting"}
+KIND_LABELS = {"herb": "Herbs", "cloth": "Cloth", "leather": "Leather", "ore": "Ore", "enchanting": "Enchanting"}
 
 
 class ParseError(ValueError):
@@ -87,87 +91,132 @@ def export_text(body: bytes) -> str:
         raise ParseError(f"line {number}: the export is not valid UTF-8") from None
 
 
-# The export contract, written by addon/Pinkas/Export.lua. Every key is required and no other is allowed:
-# a new field or kind is a contract change, and the addon bumps `v` for it.
-INT, NUM, STR, BOOL, OBJ = "int", "num", "str", "bool", "obj"
+# The export contract, written by addon/Pinkas/Export.lua. Every key is required and no other is allowed,
+# except inside an event's or total's value (below): a new field or kind bumps `v`.
+# Lua 5.1 numbers are doubles, exact up to 2^53; JSON's 1e400 reads as inf and is refused here.
+LARGEST = 2**53
+# Every text the addon writes is a name or a label from the game.
+TEXT_LIMIT = 256
+# Lists are bounded by what the game and the addon hold, so pydantic builds a bounded number of objects.
+CHAR_LIMIT = 200
+PROFESSION_LIMIT = 20
+BAG_LIMIT = 300
+BANK_LIMIT = 500
+MAIL_LIMIT = 100
+# ATTACHMENTS_MAX_RECEIVE.
+ATTACHMENT_LIMIT = 16
+# ns.EVENT_CAP in addon/Pinkas/Core.lua.
+EVENT_LIMIT = 500
+TOTAL_LIMIT = 2000
+
+Int = Annotated[int, Field(ge=-LARGEST, le=LARGEST)]
+# The pages read these as Postgres int.
+Int32 = Annotated[int, Field(ge=-(2**31), lt=2**31)]
+# The addon's counters: whole and never negative.
+Count = Annotated[int, Field(ge=0, le=LARGEST)]
+Num = Annotated[float, Field(ge=-LARGEST, le=LARGEST)]
+Text = Annotated[str, Field(max_length=TEXT_LIMIT)]
 
 
-def nullable(spec):
-    return ("null", spec)
+def contract(name: str, fields: dict):
+    """An object with every key required and no other: "5" is no int and true is no 1. A TypedDict, not a
+    model: a list of a million `{}` costs pydantic a tenth of the memory."""
+    return with_config(ConfigDict(strict=True, extra="forbid"))(TypedDict(name, fields))
+
+
+def value(name: str, fields: dict):
+    """An event's or total's value: the fields /stats reads, typed. The addon leaves a field out when it has
+    no value and writes fields /stats doesn't read, so any may be missing and the others pass."""
+    return with_config(ConfigDict(strict=True, extra="allow"))(TypedDict(name, fields, total=False))
 
 
 # An item cached by an older addon, or one read from mail, has no quality or class: those are null.
-ITEM = {
-    "id": INT, "name": nullable(STR), "count": INT,
-    "quality": nullable(INT), "class": nullable(INT), "subclass": nullable(INT),
+ITEM_V2 = {"id": Int32, "name": Text | None, "count": Int32}
+ItemV2 = contract("ItemV2", ITEM_V2)
+Item = contract("Item", ITEM_V2 | {"quality": Int32 | None, "class": Int32 | None, "subclass": Int32 | None})
+Played = contract("Played", {"total": Int, "level": Int, "at": Int})
+Profession = contract("Profession", {"skill_line": Int32 | None, "name": Text | None, "rank": Int | None, "max": Int | None})
+
+
+def mailbox(item) -> type:
+    mail = contract("Mail", {"from": Text, "money": Int, "items": Annotated[list[item], Field(max_length=ATTACHMENT_LIMIT)]})
+
+    return contract("Mailbox", {"as_of": Int, "mails": Annotated[list[mail], Field(max_length=MAIL_LIMIT)]})
+
+
+MailedItem = value("MailedItem", {"id": Int | None, "count": Count | None})
+EVENT_VALUES = {
+    # A negative time on a level: a deleted character's name came back, and the addon kept the old start.
+    "level": value("LevelValue", {"level": Int | None, "played_level": Int | None}),
+    "death": value("DeathValue", {"level": Int | None, "zone": Text | None, "killer": Text | None}),
+    "quest": value("QuestValue", {}),
+    "mail": value("MailValue", {
+        "to": Text | None, "items": Annotated[list[MailedItem], Field(max_length=ATTACHMENT_LIMIT)] | None,
+    }),
+    # A negative duration: a crash in an instance, the run closed at the logout before it.
+    "dungeon": value("DungeonValue", {
+        "instance": Text | None, "deaths": Count | None, "duration": Num | None, "ended_by_logout": bool | None,
+    }),
 }
-CHARACTER = {
-    "name": STR, "realm": STR, "class": nullable(STR), "race": nullable(STR),
-    "level": nullable(INT), "xp": nullable(INT), "xp_max": nullable(INT), "rested": nullable(INT),
-    "resting": nullable(BOOL), "money": nullable(INT), "zone": nullable(STR), "map": nullable(INT),
-    "x": nullable(NUM), "y": nullable(NUM), "session_started_at": nullable(INT),
-    "logout_at": nullable(INT), "played": nullable({"total": INT, "level": INT, "at": INT}),
-    "professions": [{"skill_line": nullable(INT), "name": nullable(STR), "rank": nullable(INT), "max": nullable(INT)}],
-    "bags": [ITEM], "bag_slots": nullable(INT),
-    "bank": nullable({"as_of": INT, "slots": nullable(INT), "items": [ITEM]}),
-    "mailbox": nullable({"as_of": INT, "mails": [{"from": STR, "money": INT, "items": [ITEM]}]}),
-    "events": [{"id": INT, "at": INT, "kind": ("enum", EVENT_KINDS), "value": OBJ}],
-    "totals": [{"session": INT, "kind": ("enum", TOTAL_KINDS), "key": STR, "value": OBJ}],
+TOTAL_VALUES = {
+    "gold": value("GoldValue", {"in": Count | None, "out": Count | None}),
+    "combat": value("CombatValue", {"damage": Num | None, "healing": Num | None, "seconds": Num | None, "fights": Count | None}),
+    "gather": value("GatherValue", {"count": Count | None}),
+    "rested": value("RestedValue", {"xp": Count | None, "rested_used": Count | None}),
 }
-ITEM_V2 = {"id": INT, "name": nullable(STR), "count": INT}
-CHARACTER_V2 = {k: v for k, v in CHARACTER.items() if k != "bag_slots"} | {
-    "bags": [ITEM_V2],
-    "bank": nullable({"as_of": INT, "items": [ITEM_V2]}),
-    "mailbox": nullable({"as_of": INT, "mails": [{"from": STR, "money": INT, "items": [ITEM_V2]}]}),
+EVENT_KINDS, TOTAL_KINDS = set(EVENT_VALUES), set(TOTAL_VALUES)
+
+
+def by_kind(name: str, fields: dict, values: dict, limit: int):
+    """A list of rows told apart by `kind`, each holding its own value."""
+    rows = [contract(f"{name}_{kind}", fields | {"kind": Literal[kind], "value": model}) for kind, model in values.items()]
+
+    return Annotated[list[Annotated[Union[*rows], Field(discriminator="kind")]], Field(max_length=limit)]
+
+
+CHARACTER_V2 = {
+    "name": Text, "realm": Text, "class": Text | None, "race": Text | None,
+    "level": Int | None, "xp": Int | None, "xp_max": Int | None, "rested": Int | None, "resting": bool | None,
+    "money": Int | None, "zone": Text | None, "map": Int | None, "x": Num | None, "y": Num | None,
+    "session_started_at": Int | None, "logout_at": Int | None, "played": Played | None,
+    "professions": Annotated[list[Profession], Field(max_length=PROFESSION_LIMIT)],
+    "bags": Annotated[list[ItemV2], Field(max_length=BAG_LIMIT)],
+    "bank": contract("BankV2", {"as_of": Int, "items": Annotated[list[ItemV2], Field(max_length=BANK_LIMIT)]}) | None,
+    "mailbox": mailbox(ItemV2) | None,
+    "events": by_kind("Event", {"id": Int, "at": Int}, EVENT_VALUES, EVENT_LIMIT),
+    "totals": by_kind("Total", {"session": Int, "key": Text}, TOTAL_VALUES, TOTAL_LIMIT),
 }
-# Contract version -> character spec. Files written before an addon update still arrive.
-CHARACTERS = {2: CHARACTER_V2, 3: CHARACTER}
+CHARACTER = CHARACTER_V2 | {
+    "bags": Annotated[list[Item], Field(max_length=BAG_LIMIT)],
+    "bag_slots": Int | None,
+    "bank": contract("Bank", {
+        "as_of": Int, "slots": Int | None, "items": Annotated[list[Item], Field(max_length=BANK_LIMIT)],
+    }) | None,
+    "mailbox": mailbox(Item) | None,
+}
+HEAD = TypeAdapter(contract("Head", {
+    "v": Int, "exported_at": Int, "build": Text, "routes": dict, "chars": Annotated[dict, Field(max_length=CHAR_LIMIT)],
+}))
+# Contract version -> the characters' type. Files written before an addon update still arrive.
+CHARACTERS = {
+    2: TypeAdapter(list[contract("CharacterV2", CHARACTER_V2)]),
+    3: TypeAdapter(list[contract("Character", CHARACTER)]),
+}
 
 
-def check(value, spec, path: str) -> None:
-    if isinstance(spec, tuple) and spec[0] == "null":
-        if value is not None:
-            check(value, spec[1], path)
+def where(loc: tuple, root: str) -> str:
+    return root + "".join(f"[{part}]" if isinstance(part, int) else f".{part}" for part in loc)
 
-        return
 
-    if isinstance(spec, tuple) and spec[0] == "enum":
-        if value not in spec[1]:
-            raise ParseError(f"{path}: an unknown kind")
+def refused(error: ValidationError, root: str) -> ParseError:
+    """The first problem as its path and pydantic's error type: no value from the file reaches the log."""
+    first = error.errors(include_url=False, include_input=False)[0]
 
-        return
+    # The last step of their path is a key, and an unknown key comes from the file.
+    if first["type"] in ("extra_forbidden", "missing"):
+        return ParseError(f"{where(first['loc'][:-1], root)}: the keys differ from the contract")
 
-    if isinstance(spec, list):
-        if not isinstance(value, list):
-            raise ParseError(f"{path}: expected a list")
-
-        for i, item in enumerate(value):
-            check(item, spec[0], f"{path}[{i}]")
-
-        return
-
-    if isinstance(spec, dict):
-        if not isinstance(value, dict):
-            raise ParseError(f"{path}: expected an object")
-        if value.keys() != spec.keys():
-            raise ParseError(f"{path}: the keys differ from the contract")
-
-        for key, sub in spec.items():
-            check(value[key], sub, f"{path}.{key}")
-
-        return
-
-    # bool is an int in Python, so it is excluded from the numbers explicitly.
-    ok = {
-        INT: isinstance(value, int) and not isinstance(value, bool),
-        NUM: isinstance(value, int | float) and not isinstance(value, bool),
-        STR: isinstance(value, str),
-        BOOL: isinstance(value, bool),
-        OBJ: isinstance(value, dict),
-    }[spec]
-
-    if not ok:
-        raise ParseError(f"{path}: expected {spec}")
+    return ParseError(f"{where(first['loc'], root)}: {first['type']}")
 
 
 def not_json(constant: str):
@@ -175,6 +224,7 @@ def not_json(constant: str):
 
 
 def parse(body: bytes) -> dict:
+    """The export as JSON gave it, once it matches the contract."""
     try:
         export = json.loads(export_text(body), parse_constant=not_json)
     except json.JSONDecodeError as exc:
@@ -182,7 +232,10 @@ def parse(body: bytes) -> dict:
     except RecursionError:
         raise ParseError("the export is nested too deeply") from None
 
-    check(export, {"v": INT, "exported_at": INT, "build": STR, "routes": OBJ, "chars": OBJ}, "export")
+    try:
+        HEAD.validate_python(export)
+    except ValidationError as exc:
+        raise refused(exc, "export") from None
 
     if export["v"] not in CHARACTERS:
         raise ParseError("export.v: an unknown contract version")
@@ -190,13 +243,17 @@ def parse(body: bytes) -> dict:
     for i, (kind, recipient) in enumerate(export["routes"].items()):
         if kind not in ROUTE_KINDS:
             raise ParseError(f"export.routes[{i}]: an unknown kind")
-        if not isinstance(recipient, str):
-            raise ParseError(f"export.routes[{i}]: expected str")
 
-    # Characters are addressed by position: their keys are names.
+        if not isinstance(recipient, str) or len(recipient) > TEXT_LIMIT:
+            raise ParseError(f"export.routes[{i}]: expected a name")
+
+    # Characters are checked by position: their keys are names.
+    try:
+        CHARACTERS[export["v"]].validate_python(list(export["chars"].values()))
+    except ValidationError as exc:
+        raise refused(exc, "chars") from None
+
     for i, (key, char) in enumerate(export["chars"].items()):
-        check(char, CHARACTERS[export["v"]], f"chars[{i}]")
-
         if key != f"{char['realm']}/{char['name']}":
             raise ParseError(f"chars[{i}]: the key is not realm/name")
 

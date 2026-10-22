@@ -2,7 +2,7 @@
 {% block title %}settings — pinkas{% endblock %}
 {% macro target(c, r) %}<div class="row"><label for="t{{ c.id }}-{{ r.skill_line }}">{{ r.name }}{% if r.rank is not none %} <span class="muted">{{ r.rank }}</span>{% endif %}</label><select id="t{{ c.id }}-{{ r.skill_line }}" name="target-{{ r.skill_line }}"><option value="">no target</option>{% for s in skills %}<option value="{{ s }}"{% if r.upto == s %} selected{% endif %}>up to {{ s }}</option>{% endfor %}</select></div>{% endmacro %}
 {% block main %}
-<h1 class="sr">Settings</h1>
+<h1>Settings</h1>
 <p class="muted note">“Up to 225” sets two steps: 150, then 225. Names come from the game.</p>
 {% if characters %}
 <div class="settings-list">

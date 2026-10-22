@@ -36,9 +36,10 @@ from markdown_it import MarkdownIt
 from markdown_it.common.utils import escapeHtml
 from psycopg2.extras import execute_values
 
-from pinkas import rested
+from pinkas import rested, stats
+from pinkas.db import NEWEST, fetch
 from pinkas.ingest import ts
-from pinkas.parse import ROUTE_KINDS, ParseError
+from pinkas.parse import KIND_LABELS, KIND_OF, ROUTE_KINDS, ParseError
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=True)
@@ -52,11 +53,8 @@ FORM_LIMIT = 8192
 # The whole string must match: no "//" or scheme means no off-site redirect, and the charset keeps a
 # decoded CR/LF out of the Location header.
 SEGMENT = r"[A-Za-z0-9_.~%-]+"
-NEXT_RE = re.compile(rf"/(?:c/{SEGMENT}/{SEGMENT}|search|guide|settings)?")
+NEXT_RE = re.compile(rf"/(?:c/{SEGMENT}/{SEGMENT}|search|guide|stats|settings)?")
 TARGET_SKILLS = (150, 225, 300)
-# Trade-goods (class 7) subclasses per route kind, the pairs addon/Pinkas/Routes.lua matches in game.
-KIND_OF = {(7, 9): "herb", (7, 5): "cloth", (7, 6): "leather", (7, 7): "ore", (7, 12): "enchanting"}
-KIND_LABELS = {"herb": "Herbs", "cloth": "Cloth", "leather": "Leather", "ore": "Ore", "enchanting": "Enchanting"}
 # Common (1) is plain text; the word is for screen readers, the colour is in base.html.
 QUALITY_WORDS = {0: "poor", 2: "uncommon", 3: "rare", 4: "epic", 5: "legendary"}
 # Cooking, Fishing and First Aid: every character can learn them beside its two professions.
@@ -232,11 +230,23 @@ def duration(seconds: float) -> str:
     return f"{math.ceil(seconds / 86400)} d"
 
 
+def minutes(seconds: float | None) -> str:
+    if seconds is None:
+        return "—"
+
+    total = round(seconds / 60)
+
+    return f"{total} min" if total < 60 else f"{total // 60} h {total % 60} min"
+
+
 def local(moment: datetime | None) -> str:
     return moment.astimezone().strftime("%Y-%m-%d %H:%M %Z") if moment else "—"
 
 
-TEMPLATES.filters.update(pathpart=pathpart, gold=gold, epoch=epoch, ago=ago, stale=stale, duration=duration, local=local)
+TEMPLATES.filters.update(
+    pathpart=pathpart, gold=gold, epoch=epoch, ago=ago, stale=stale, duration=duration, minutes=minutes, local=local
+)
+TEMPLATES.globals.update(range_labels=stats.RANGE_LABELS, one_decimal="{:.1f}".format, percent="{}%".format)
 TEMPLATES.globals["quality_words"] = QUALITY_WORDS
 TEMPLATES.globals["rested"] = {
     "share": rested.BAR_SHARE_PER_PERIOD,
@@ -255,17 +265,6 @@ def render(name: str, **ctx) -> str:
 def connect(dsn: str):
     return psycopg2.connect(dsn, connect_timeout=5)
 
-
-def fetch(cur, sql: str, args=()) -> list[dict]:
-    cur.execute(sql, args)
-    names = [d.name for d in cur.description]
-
-    return [dict(zip(names, row, strict=True)) for row in cur.fetchall()]
-
-
-# Each character's newest snapshot as `s`, walking the (character_id, logout_at) unique index.
-NEWEST = """CROSS JOIN LATERAL (SELECT logout_at, data FROM pinkas_snapshots
-                    WHERE character_id = c.id ORDER BY logout_at DESC LIMIT 1) s"""
 
 CHARACTERS_SQL = f"""
 SELECT c.id, c.realm, c.name, c.role, c.well_rested_rank, s.logout_at, s.data,
@@ -294,7 +293,7 @@ LEFT JOIN LATERAL (SELECT s.data->'export' AS export FROM pinkas_characters c {N
 # export left null.
 SEARCH_SQL = f"""
 SELECT c.realm, c.name, x.container, x.item->>'name' AS item, (x.item->>'id')::int AS item_id,
-       max((x.item->>'quality')::int) AS quality, sum((x.item->>'count')::int)::int AS count
+       max((x.item->>'quality')::int) AS quality, sum((x.item->>'count')::int) AS count
 FROM pinkas_characters c
 {NEWEST}
 CROSS JOIN LATERAL (
@@ -863,8 +862,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             return self.page(conn, 200, "search.html", ctx, cookie, q=q, results=results)
 
+        if path == "/stats":
+            key = stats.range_key(parse_qs(query).get("range", [None])[0])
+
+            with conn, conn.cursor() as cur:
+                # The charts change with an ingest (a new file), a character's role or name, and the day.
+                cur.execute("SELECT max(id) FROM pinkas_files")
+                (newest,) = cur.fetchone()
+                cur.execute(stats.CHARACTERS_SQL)
+                mark = (newest, now.astimezone().date(), tuple(cur.fetchall()))
+                cached = self.server.stats_cache.get(key)
+
+                if cached and cached[0] == mark:
+                    view = cached[1]
+                else:
+                    view = stats.view(stats.collect(cur, key, now))
+                    self.server.stats_cache[key] = (mark, view)
+
+                nerd = nerd_stats(cur)
+
+            return self.page(conn, 200, "stats.html", ctx, cookie, nerd, v=view)
+
         if path == "/guide":
-            return self.page(conn, 200, "guide.html", ctx, cookie, **self.guide())
+            return self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(down=1))
 
         if path == "/settings":
             with conn, conn.cursor() as cur:
@@ -889,6 +909,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 known = professions(cur) if unlearned else {}
                 cur.execute("SELECT name FROM pinkas_characters WHERE realm = %s", (realm,))
                 alts = {name.casefold(): name for (name,) in cur.fetchall()}
+                history = stats.history(cur, rows[0]["id"], now) if rows else None
 
             if rows:
                 row = summary(rows[0], targets, now)
@@ -912,7 +933,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.page(
                     conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(down=1),
                     bags=bag_groups, bag_slots=slots(data["bags"], data.get("bag_slots")),
-                    bank=bank_groups, bank_slots=bank_slots,
+                    bank=bank_groups, bank_slots=bank_slots, history=history,
                     raw=json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True),
                 )
 
@@ -957,6 +978,8 @@ def main(argv: list[str]) -> int:
     host, port = listen_address(os.environ.get("PINKAS_LISTEN", "127.0.0.1:8094"))
     server = http.server.ThreadingHTTPServer((host, port), Handler)
     server.conf = conf
+    # The /stats view per range, until the data behind it changes.
+    server.stats_cache = {}
     print(f"pinkas: listening on {host}:{port}", flush=True)
     server.serve_forever()
 

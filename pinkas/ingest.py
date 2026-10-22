@@ -15,17 +15,19 @@ CARRIED = ("bank", "mailbox")
 # The export's account-wide fields, kept with each snapshot as "export": the page reads the routes,
 # version and build from the newest one, and raw files are purged after 30 days.
 EXPORT_IN_SNAPSHOT = ("v", "build", "routes")
+# A time() outside these years is a damaged file; one near year 9999 overflows the pages' local zone.
+EARLIEST = int(datetime(2000, 1, 1, tzinfo=UTC).timestamp())
+LATEST = int(datetime(2100, 1, 1, tzinfo=UTC).timestamp())
 
 
 def ts(epoch: int | None) -> datetime | None:
     if epoch is None:
         return None
 
-    # Out of range raises OverflowError, ValueError or (macOS) OSError, depending on the platform.
-    try:
-        return datetime.fromtimestamp(epoch, UTC)
-    except (OverflowError, ValueError, OSError):
-        raise ParseError("a time is out of range") from None
+    if not EARLIEST <= epoch < LATEST:
+        raise ParseError("a time is out of range")
+
+    return datetime.fromtimestamp(epoch, UTC)
 
 
 def ingest(conn, body: bytes, fetched_at: datetime) -> dict:

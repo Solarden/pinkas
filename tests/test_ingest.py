@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import psycopg2
 import pytest
 
-from pinkas.ingest import ingest
+from pinkas.ingest import ingest, ts
 from pinkas.parse import ParseError
 from tests.db import migrate
 from tests.files import KEY, account, account_v3, fixture, with_export
@@ -209,3 +209,9 @@ def test_the_app_role_purges_files_but_never_rewrites_history(conn, owner):
 def test_the_migration_goes_down_and_up():
     migrate("downgrade", "base")
     migrate("upgrade", "head")
+
+
+@pytest.mark.parametrize("epoch", [0, 4102444800, 253402300799], ids=["1970", "2100", "9999"])
+def test_a_time_outside_the_years_the_game_runs_is_refused(epoch):
+    with pytest.raises(ParseError, match="out of range"):
+        ts(epoch)

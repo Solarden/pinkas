@@ -1,0 +1,69 @@
+{# Chart pieces for /stats. Geometry comes from pinkas/charts.py as numbers; every label here is autoescaped.
+   `class` and `style` only ever get numbers and slot indexes, never game text. #}
+{% macro legend(items) %}{% if items|length > 1 %}<ul class="legend">{% for s in items %}<li><span class="sw s{{ s.slot or 0 }}"></span>{{ s.name }}</li>{% endfor %}</ul>{% endif %}{% endmacro %}
+
+{% macro table_view(t, name) %}<details class="table-view"><summary>Table<span class="sr">: {{ name }}</span></summary><div class="table-box" tabindex="0" role="group" aria-label="{{ name }}, table"><table>
+<thead><tr>{% for h in t.head %}<th scope="col">{{ h }}</th>{% endfor %}</tr></thead>
+<tbody>{% for row in t.rows %}<tr>{% for cell in row %}{% if loop.first %}<th scope="row">{{ cell }}</th>{% else %}<td>{{ cell }}</td>{% endif %}{% endfor %}</tr>{% endfor %}</tbody>
+</table></div></details>{% endmacro %}
+
+{% macro empty(text) %}<p class="muted empty">{{ text }}</p>{% endmacro %}
+
+{# A line chart: hairline grid, 2 px lines, an end dot, direct labels where they fit, a <title> per point. #}
+{% macro line(id, c, title, sub, summary, none_text) %}<figure class="panel chart" id="{{ id }}">
+<figcaption><h3>{{ title }}</h3><p>{{ sub }}</p></figcaption>
+{% if c.empty %}{{ empty(none_text) }}{% else %}
+<div class="chart-box" tabindex="0" role="group" aria-label="{{ title }}, chart: ←/→ read the values, Esc closes">
+<svg viewBox="0 0 {{ c.width }} {{ c.height }}" role="img" aria-label="{{ summary }}">
+{% for t in c.y_ticks %}<line class="grid" x1="{{ c.plot.x0 }}" x2="{{ c.plot.x1 }}" y1="{{ t.y }}" y2="{{ t.y }}"></line><text x="{{ c.plot.x0 - 8 }}" y="{{ t.y + 4 }}" text-anchor="end">{{ t.label }}</text>
+{% endfor %}{% for t in c.x_ticks %}<text x="{{ t.x }}" y="{{ c.plot.y1 + 20 }}" text-anchor="middle">{{ t.label }}</text>
+{% endfor %}<line class="cross" x1="0" x2="0" y1="{{ c.plot.y0 }}" y2="{{ c.plot.y1 }}"></line>
+{% for s in c.series %}<g class="s{{ s.slot or 0 }}"><path class="series" d="{{ s.d }}"></path><circle class="end" cx="{{ s.end.x }}" cy="{{ s.end.y }}" r="4"></circle>{% if s.end.label %}<text class="end-label" x="{{ s.end.x + 8 }}" y="{{ s.end.y + 4 }}">{{ s.end.label }}</text>{% endif %}
+{% for p in s.points %}<circle class="hit" cx="{{ p.x }}" cy="{{ p.y }}" r="8"><title>{{ p.title }}</title></circle>{% endfor %}</g>
+{% endfor %}</svg></div>
+<div class="tip" hidden></div><p class="sr" aria-live="polite"></p>
+{{ legend(c.legend) }}
+{{ table_view(c.table, title) }}{% endif %}
+</figure>{% endmacro %}
+
+{# Ranked values as meters: a name, its value written out, and a bar under it. Without `top` the largest row
+   sets the scale: the folded "other" row can be larger than the first. #}
+{% macro ranked(rows, label, fmt=none, top=none) %}{% set top = top or rows|map("last")|max %}{% for name, n in rows %}<div class="prof"><span class="n">{{ name }}</span><span class="count">{{ fmt(n) if fmt else n }}</span><meter min="0" max="{{ top }}" value="{{ n }}" aria-label="{{ label }}: {{ name }}, {{ fmt(n) if fmt else n }}"></meter></div>
+{% endfor %}{% endmacro %}
+
+{% macro calendar(strip) %}<div class="cal">
+<p class="cal-name">{% if strip.slot is not none %}<span class="sw s{{ strip.slot or 0 }}"></span>{% endif %}{{ strip.name }} <span class="count">{{ strip.total }} h</span></p>
+<svg viewBox="0 0 {{ strip.width }} {{ strip.height }}" role="img" aria-label="{{ strip.name }}: {{ strip.total }} hours played">
+{% for m in strip.months %}<text x="{{ m.x }}" y="10">{{ m.label }}</text>{% endfor %}
+{% for d in strip.days %}<text x="0" y="{{ d.y }}">{{ d.label }}</text>{% endfor %}
+{% for c in strip.cells %}<rect class="d{{ c.step }}" x="{{ c.x }}" y="{{ c.y }}" width="11" height="11" rx="2"><title>{{ c.title }}</title></rect>{% endfor %}
+</svg></div>{% endmacro %}
+
+{# The account's year at the characters' cell size; its month and weekday labels are HTML beside the cells. #}
+{% macro year(y) %}<p class="cal-name">All characters <span class="count">{{ y.total }} h in 12 months</span></p>
+<div class="year-box" tabindex="0" role="group" aria-label="Hours played a day by all characters, last 12 months">
+<div class="year" style="--year:{{ (y.width * 1.4)|round|int }}px"><span></span><div class="year-months" aria-hidden="true">{% for m in y.spans %}<span style="flex:{{ m.weeks }}">{{ m.label }}</span>{% endfor %}</div>
+<div class="year-days" aria-hidden="true"><span>Mon</span><span></span><span>Wed</span><span></span><span>Fri</span><span></span><span></span></div>
+<svg viewBox="0 0 {{ y.width }} {{ y.height }}" role="img" aria-label="All characters: {{ y.total }} hours played in the last 12 months">
+{% for c in y.cells %}<rect class="d{{ c.step }}" x="{{ c.x }}" y="{{ c.y }}" width="11" height="11" rx="2"><title>{{ c.title }}</title></rect>{% endfor %}
+</svg></div></div>{% endmacro %}
+
+{% macro sankey(c) %}<div class="chart-box" tabindex="0" role="group" aria-label="Material flow, chart">
+<svg viewBox="-4 -8 {{ c.width + 8 }} {{ c.height + 16 }}" role="img" aria-label="Materials mailed between characters: sender, material, recipient">
+{% for l in c.links %}<path class="band s{{ l.slot }}" d="{{ l.d }}"><title>{{ l.from }} → {{ l.to }} · {{ l.value }} items</title></path>
+{% endfor %}{% for n in c.nodes %}<rect class="node{% if n.slot is not none %} s{{ n.slot }}{% endif %}" x="{{ n.x }}" y="{{ n.y }}" width="{{ c.node_w }}" height="{{ n.h }}" rx="2"><title>{{ n.label }} · {{ n.value }} items</title></rect>
+<text class="halo" x="{{ n.x - 6 if n.col == 0 else n.x + c.node_w + 6 }}" y="{{ n.y + n.h / 2 + 4 }}"{% if n.col == 0 %} text-anchor="end"{% endif %}>{{ n.label }} <tspan class="v">{{ n.value }}</tspan></text>
+{% endfor %}</svg></div>{% endmacro %}
+
+{# Gold in and out by source: out grows left from the middle, in grows right; both written. #}
+{% macro gold_rows(rows, top) %}{% for s in rows %}<div class="dv">
+<span class="dv-head"><span class="n">{{ s.source }}</span><span class="count">{% if s.out %}out −{{ s.out|gold }}{% endif %}{% if s.out and s.in %} · {% endif %}{% if s.in %}in +{{ s.in|gold }}{% endif %}</span></span>
+<span class="dv-out" aria-hidden="true"><span class="bar" style="width:{{ (100 * s.out / top)|round(1) if top else 0 }}%"></span></span>
+<span class="dv-in" aria-hidden="true"><span class="bar" style="width:{{ (100 * s.in / top)|round(1) if top else 0 }}%"></span></span>
+</div>
+{% endfor %}{% endmacro %}
+
+{# `wide` stretches the line across its row (the stockpiles); a stretched end dot would turn oval, so it has none. #}
+{% macro spark(label, s, now_text, change, wide=false) %}<div class="spark{% if wide %} wide{% endif %}"><span class="label">{{ label }}</span>
+{% if s.empty %}<span class="val">no history yet</span>{% else %}<svg viewBox="0 0 {{ s.width }} {{ s.height }}" aria-hidden="true"{% if wide %} preserveAspectRatio="none"{% endif %}><polyline points="{{ s.points }}"{% if wide %} vector-effect="non-scaling-stroke"{% endif %}></polyline>{% if not wide %}<circle cx="{{ s.end[0] }}" cy="{{ s.end[1] }}" r="2.5"></circle>{% endif %}</svg>
+<span class="val">{{ now_text }} · {{ change }}</span>{% endif %}</div>{% endmacro %}
