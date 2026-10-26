@@ -18,7 +18,7 @@ dependencies = [
 
 [tool.uv]
 package = false
-# pydantic's own dependency, at the minor line petel's apt has (trixie: 0.7.0).
+# pydantic's own dependency, at the minor line the server's apt has (Debian trixie: 0.7.0).
 constraint-dependencies = ["annotated-types>=0.7,<0.8"]
 
 [dependency-groups]
