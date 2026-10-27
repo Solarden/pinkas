@@ -4,6 +4,10 @@ name: release-windows
 on:
   push:
     tags: ["v*"]
+    # A change to the build is checked on its own branch too, without signing or a release; GitHub ignores
+    # these paths for a tag.
+    branches: ["**"]
+    paths: [packaging/**, .github/workflows/release-windows.yml, pyproject.toml, uv.lock]
   workflow_dispatch:
 permissions:
   contents: read
