@@ -330,7 +330,8 @@ def test_an_unknown_page_is_404(logged_in, conn, path):
 def test_the_nerd_panel_shows_after_login(logged_in, conn):
     ingest(conn, fixture("fake_account.lua"), FETCHED)
     index, character, missing, *others = (
-        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide", "/settings", "/stats")
+        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide",
+                                   "/settings/routes", "/settings/characters", "/guide/edit", "/stats")
     )
 
     for response in (index, character, missing, *others):
@@ -351,8 +352,8 @@ def test_the_nerd_panel_is_never_shown_before_login(client, conn):
         client.post("/logout", {"t": "wrong"}),
         client.get("/search?q=leather"),
         client.get("/guide"),
-        client.get("/settings"),
-        client.post("/settings", {"t": TOKEN, "character": "1", "rank": "0"}),
+        client.get("/settings/characters"),
+        client.post("/settings/characters", {"t": TOKEN, "character": "1", "rank": "0"}),
     ]
 
     for response in responses:
@@ -393,13 +394,13 @@ def test_game_strings_stay_inert(logged_in, conn, owner, tmp_path):
         cur.execute("UPDATE pinkas_characters SET role = %s", (XSS,))
 
     guide = tmp_path / "guide.md"
-    guide.write_text(f"# Plan\n\n{XSS}\n\n<div>{XSS}</div>\n\ninline <b>bold</b> {XSS}\n")
+    guide.write_text(f"# Plan\n\n{XSS}\n\n<div>{XSS}</div>\n\ninline <b>bold</b> {XSS}\n", encoding="utf-8")
     logged_in.server.conf = CONF._replace(guide=str(guide))
 
     index = logged_in.get("/").body
     character = logged_in.get(f"/c/Testrealm/{quote(XSS, safe='')}").body
     search = logged_in.get("/search?" + urlencode({"q": XSS})).body
-    settings = logged_in.get("/settings").body
+    settings = logged_in.get("/settings/characters").body
     handbook = logged_in.get("/guide").body
     charts = logged_in.get("/stats?range=all").body
 
@@ -618,8 +619,10 @@ def test_search_finds_a_non_ascii_name(logged_in, conn):
 # Guide --------------------------------------------------------------------------------------------
 
 
-def test_no_guide_set_says_so(logged_in):
-    assert "No guide set" in logged_in.get("/guide").body
+def test_without_a_guide_file_the_guide_is_written_in_the_app(logged_in):
+    body = logged_in.get("/guide").body
+
+    assert "No guide yet" in body and 'href="/guide/edit"' in body
 
 
 def test_an_unreadable_guide_names_only_the_class(logged_in, tmp_path, capsys):
@@ -647,7 +650,7 @@ def test_the_guide_renders_markdown_without_unsafe_links(logged_in, tmp_path):
 
 def test_only_the_guide_is_inserted_unescaped():
     templates = Path(web.TEMPLATES.loader.searchpath[0]).glob("*.html")
-    uses = {path.name: path.read_text().count("|safe") for path in templates}
+    uses = {path.name: path.read_text(encoding="utf-8").count("|safe") for path in templates}
 
     assert {name: count for name, count in uses.items() if count} == {"_guide.html": 1}
 
@@ -681,13 +684,13 @@ def test_settings_save_every_owner_field(logged_in, conn, owner):
     store(conn, with_alt(professions=[{"skill_line": 197, "name": "Tailoring", "rank": 1, "max": 75}]))
     logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Fakechar"]})
     form = settings_form(owner, role=" main ", sort="-3", rank="4", **{"target-393": "225", "target-197": "300"})
-    response = logged_in.post("/settings", form)
+    response = logged_in.post("/settings/characters", form)
 
-    assert response.status == 303 and response.headers["Location"] == "/settings"
+    assert response.status == 303 and response.headers["Location"] == "/settings/characters?done=saved"
     assert character_row(owner) == ("main", -3, 4, False, True)
     assert targets(owner) == [(197, 150), (197, 225), (197, 300), (393, 150), (393, 225)], "Tailoring is planned"
 
-    logged_in.post("/settings", settings_form(owner, archived="on", **{"target-393": ""}))
+    logged_in.post("/settings/characters", settings_form(owner, archived="on", **{"target-393": ""}))
 
     assert character_row(owner) == (None, None, 0, True, False), "archiving ends playing"
     assert targets(owner) == [(197, 150), (197, 225), (197, 300)], "a skill line the form left out keeps its rows"
@@ -711,7 +714,7 @@ def test_settings_save_every_owner_field(logged_in, conn, owner):
 )
 def test_settings_refuse_a_bad_value_and_write_nothing(logged_in, conn, owner, fields):
     store(conn, account())
-    response = logged_in.post("/settings", settings_form(owner, role="main", **{"target-393": "150"}) | fields)
+    response = logged_in.post("/settings/characters", settings_form(owner, role="main", **{"target-393": "150"}) | fields)
 
     assert response.status == 400
     assert character_row(owner) == (None, None, 0, False, False) and targets(owner) == []
@@ -730,7 +733,7 @@ def test_settings_list_learned_professions_first_and_archived_characters_last(lo
     with owner.cursor() as cur:
         cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name = 'Fakechar'")
 
-    body = logged_in.get("/settings").body
+    body = logged_in.get("/settings/characters").body
     altchar, fakechar = body.split("Altchar · Testrealm")[1].split("Fakechar · Testrealm")
 
     assert altchar.index("Tailoring") < altchar.index("Other professions") < altchar.index("Skinning")
@@ -750,7 +753,7 @@ def test_targets_show_as_progress_bars(logged_in, conn, owner, upto, shown):
     store(conn, account())
 
     if upto is not None:
-        logged_in.post("/settings", settings_form(owner, **{"target-393": upto}))
+        logged_in.post("/settings/characters", settings_form(owner, **{"target-393": upto}))
 
     for page in ("/", "/c/Testrealm/Fakechar"):
         assert shown in logged_in.get(page).body
@@ -779,12 +782,12 @@ def test_a_target_for_a_profession_no_snapshot_names_stays_visible_and_clearable
         cur.execute("INSERT INTO pinkas_targets (character_id, skill_line, skill) VALUES (%s, 999, 150)",
                     (ids(owner)["Fakechar"],))
 
-    settings = logged_in.get("/settings").body
+    settings = logged_in.get("/settings/characters").body
     character = logged_in.get("/c/Testrealm/Fakechar").body
 
     assert settings.index("Skinning") < settings.index("profession 999")
     assert '<span class="n">profession 999</span><span class="note">planned, not learned · up to 150' in character
-    assert logged_in.post("/settings", settings_form(owner, **{"target-999": ""})).status == 303
+    assert logged_in.post("/settings/characters", settings_form(owner, **{"target-999": ""})).status == 303
     assert targets(owner) == []
 
 
@@ -906,12 +909,14 @@ def test_the_only_script_is_the_apps_own_file(logged_in, conn):
     assert script.body == (web.ROOT / "static" / "pinkas.js").read_text(encoding="utf-8")
     assert script.headers["Content-Security-Policy"].startswith("default-src 'none'; script-src 'self';")
 
-    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing"):
+    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings/routes", "/settings/characters",
+                 "/guide/edit", "/guide", "/stats", "/nothing"):
         tags = re.findall(r"<script[^>]*>", logged_in.get(path).body)
 
         assert '<script src="/static/pinkas.js" defer>' in tags
         assert set(tags) <= {
             '<script src="/static/pinkas.js" defer>', '<script type="application/json" id="cards">',
+            '<script src="/static/tiny-mde.js" defer>',
             '<script type="application/json" id="charts">',
         }
 
@@ -931,7 +936,8 @@ def test_the_script_is_revalidated_while_pages_are_never_stored(logged_in, conn)
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing", "/login"]
+    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings/routes", "/settings/characters",
+             "/guide/edit", "/guide", "/stats", "/nothing", "/login"]
 )
 def test_every_page_has_one_h1(logged_in, conn, path):
     store(conn, account())
@@ -1013,6 +1019,12 @@ def test_a_full_bank_turns_own_mats_in_the_bags_into_a_warning(logged_in, conn):
     assert "<span>Leather · bank full</span>" in bags
 
 
+def test_a_name_realm_route_shows_the_characters_name(logged_in, conn):
+    store(conn, routed_account())
+
+    assert 'Leather → <a href="/c/Testrealm/Fakechar">Fakechar</a>' in logged_in.get("/c/Testrealm/Altchar").body
+
+
 def test_items_carry_their_quality_colour_and_word(logged_in, conn):
     store(conn, routed_account())
     body = logged_in.get("/c/Testrealm/Fakechar").body
@@ -1052,8 +1064,61 @@ def test_the_mail_plan_adds_up_routed_slots_per_character(logged_in, conn):
 
     assert '<a href="/c/Testrealm/Fakechar">Fakechar</a></span>' in plan
     assert '<a href="/c/Testrealm/Altchar">Altchar</a> 2<span class="sr"> slots</span>' in plan
-    assert '<a href="/c/Testrealm/Fakechar">Fakechar-Testrealm</a> 1' in plan, "Altchar's leather, to a Name-Realm route"
-    assert "<span>cloth → Altchar</span> · <span>leather → Fakechar-Testrealm</span>" in plan
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar</a> 1' in plan, "Altchar's leather, to a Name-Realm route, by name"
+    assert "<span>cloth → Altchar</span> · <span>leather → Fakechar</span>" in plan
+
+
+def test_a_route_to_a_same_named_stranger_on_another_realm_keeps_its_realm(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"ore": "Altchar-OtherRealm"}
+    store(conn, export)
+
+    assert "<span>ore → Altchar-OtherRealm</span>" in logged_in.get("/").body
+
+
+def test_a_same_named_alt_on_another_realm_is_another_character(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar-OtherRealm"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+    here = logged_in.get("/c/Testrealm/Fakechar").body
+    there = logged_in.get("/c/Other%20Realm/Fakechar").body
+
+    assert 'Leather → <a href="/c/Other%20Realm/Fakechar">Fakechar</a>' in here
+    assert "Leather → bank" in there and "Leather →" not in there.replace("Leather → bank", "")
+
+
+def test_a_route_without_a_realm_links_this_realms_character_first(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+
+    assert 'Leather → <a href="/c/Testrealm/Fakechar">Fakechar</a>' in logged_in.get("/c/Testrealm/Altchar").body
+
+
+def test_the_mail_plan_takes_a_route_without_a_realm_to_the_senders_realm(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+
+    # Listed first, so a plain first match would take it.
+    with conn, conn.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET sort = 1 WHERE realm = 'Other Realm'")
+
+    plan = logged_in.get("/").body.split("Mail plan · slots to send")[1].split("</section>")[0]
+
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar</a> 1' in plan and "Other%20Realm/Fakechar\">Fakechar</a> " not in plan
+
+
+def test_a_route_to_a_stranger_named_like_an_alt_links_nobody(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Altchar-OtherRealm"}
+    store(conn, export)
+    plan = logged_in.get("/").body.split("Mail plan · slots to send")[1].split("</section>")[0]
+
+    assert "Altchar-OtherRealm 2" in plan and '">Altchar</a> ' not in plan
 
 
 def test_without_routes_there_is_no_mail_plan(logged_in, conn):

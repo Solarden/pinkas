@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_settings.html" import tabs, flash_message %}
+{% block title %}settings: routes — pinkas{% endblock %}
+{% block main %}
+{{ tabs(tab, desktop) }}
+{{ flash_message(flash) }}
+{% if desktop %}
+<form class="panel" method="post" action="/settings/routes">
+<input type="hidden" name="t" value="{{ token }}">
+<h2>Who gets which materials</h2>
+{% if from_game %}<p class="note muted">These are the routes set in the game. Save them to set them here.</p>{% endif %}
+<div class="route-grid">
+{% for r in routes %}<div class="field"><label for="route-{{ r.kind }}">{{ r.label }}</label><select id="route-{{ r.kind }}" name="route-{{ r.kind }}" aria-describedby="hint-{{ r.kind }}"><option value="">nobody</option>{% for realm, characters in realms.items() %}<optgroup label="{{ realm }}">{% for c in characters %}<option value="{{ c.id }}"{% if c.id == r.picked %} selected{% endif %}>{{ c.name }}</option>{% endfor %}</optgroup>{% endfor %}</select><p class="hint" id="hint-{{ r.kind }}">{{ r.hint }}</p></div>
+{% endfor %}</div>
+<button>Save routes</button>
+</form>
+<div class="panel">
+<h2>How routes work</h2>
+<ol class="how">
+<li>Pick who gets each material here, and save.</li>
+<li>In the game, type <code>/reload</code> or log in again.</li>
+<li>At a mailbox, press the addon's <b>Route mats</b> button: it fills in a mail to that character with those materials from your bags.</li>
+</ol>
+<p class="note muted set">With nobody picked for every material, the routes set in the game with <code>/pinkas route</code> apply.</p>
+</div>
+{% else %}
+<p class="muted note">At a mailbox, the addon's <b>Route mats</b> button fills in a mail to these characters. They are set in the game{% if nerd.fetched_at %}, and shown as of the last read, {{ nerd.fetched_at|local }}{% endif %}.</p>
+<div class="panel">
+<h2>Who gets which materials</h2>
+<dl class="route-grid">
+{% for label, who in routes %}<div><dt>{{ label }}</dt><dd>{% if who %}{{ who }}{% else %}<span class="muted">nobody</span>{% endif %}</dd></div>
+{% endfor %}</dl>
+<p class="note muted set">Set one in the game with <code>/pinkas route herb Herbchar</code>; <code>/pinkas route herb</code> clears it.</p>
+</div>
+{% endif %}
+{% endblock %}

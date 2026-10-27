@@ -178,7 +178,7 @@ def test_whatever_is_stored_renders_on_every_page(logged_in, conn, database, exp
     # The ids restart, and the /stats cache takes an unchanged newest file id as unchanged data.
     logged_in.server.stats_cache.clear()
     stored = [e["chars"] for e in exported if stores(conn, with_export(e))]
-    pages = ["/", "/stats", "/stats?range=all", "/stats?range=30", "/settings"]
+    pages = ["/", "/stats", "/stats?range=all", "/stats?range=30", "/settings/routes", "/settings/characters", "/guide"]
 
     # Ingest skips a character that never logged out with the addon: it has no page yet.
     for chars in stored:

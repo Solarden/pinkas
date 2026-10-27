@@ -1,17 +1,19 @@
 {% extends "base.html" %}
-{% block title %}settings — pinkas{% endblock %}
-{% macro target(c, r) %}<div class="row"><label for="t{{ c.id }}-{{ r.skill_line }}">{{ r.name }}{% if r.rank is not none %} <span class="muted">{{ r.rank }}</span>{% endif %}</label><select id="t{{ c.id }}-{{ r.skill_line }}" name="target-{{ r.skill_line }}"><option value="">no target</option>{% for s in skills %}<option value="{{ s }}"{% if r.upto == s %} selected{% endif %}>up to {{ s }}</option>{% endfor %}</select></div>{% endmacro %}
+{% from "_settings.html" import tabs, flash_message %}
+{% block title %}settings: characters — pinkas{% endblock %}
+{% macro target(c, r) %}<div class="row"><label for="t{{ c.id }}-{{ r.skill_line }}">{{ r.name }}{% if r.rank is not none %} <span class="muted">{{ r.rank }}<span class="sr-only"> now</span></span>{% endif %}</label><select id="t{{ c.id }}-{{ r.skill_line }}" name="target-{{ r.skill_line }}"><option value="">no target</option>{% for s in skills %}<option value="{{ s }}"{% if r.upto == s %} selected{% endif %}>up to {{ s }}</option>{% endfor %}</select></div>{% endmacro %}
 {% block main %}
-<h1>Settings</h1>
+{{ tabs(tab, desktop) }}
+{{ flash_message(flash) }}
 <p class="muted note">“Up to 225” sets two steps: 150, then 225. Names come from the game.</p>
 {% if characters %}
 <div class="settings-list">
 {% for c in characters %}
-<form class="panel settings" method="post" action="/settings">
+<form class="panel settings" method="post" action="/settings/characters">
 <h2>{{ c.name }} · {{ c.realm }}{% if c.archived_at %} · archived{% endif %}</h2>
 <input type="hidden" name="t" value="{{ token }}"><input type="hidden" name="character" value="{{ c.id }}">
 <div class="row"><label for="role{{ c.id }}">Role</label><input id="role{{ c.id }}" name="role" maxlength="40" value="{{ c.role or '' }}"></div>
-<div class="row"><label for="sort{{ c.id }}">Order</label><input id="sort{{ c.id }}" name="sort" inputmode="numeric" placeholder="lower comes first" value="{{ c.sort if c.sort is not none else '' }}"></div>
+<div class="row"><label for="sort{{ c.id }}">Order <span class="muted">(lower first)</span></label><input id="sort{{ c.id }}" name="sort" inputmode="numeric" value="{{ c.sort if c.sort is not none else '' }}"></div>
 <div class="row"><label for="rank{{ c.id }}">Well Rested rank</label><select id="rank{{ c.id }}" name="rank">{% for r in range(6) %}<option{% if c.well_rested_rank == r %} selected{% endif %}>{{ r }}</option>{% endfor %}</select></div>
 <label class="check"><input type="checkbox" name="archived"{% if c.archived_at %} checked{% endif %}> Archived: hidden from the list and search</label>
 <h3>Targets</h3>

@@ -1,0 +1,6 @@
+{# The settings tabs, and the message a POST's redirect brings (web.DONE): at the top, focused by pinkas.js. #}
+{% macro tabs(tab, desktop) %}<h1>Settings</h1>
+<nav aria-label="Settings"><ul class="tabs">
+{%- for key, label in ([("game", "Game")] if desktop else []) + [("routes", "Routes"), ("characters", "Characters")] %}<li><a href="/settings/{{ key }}"{% if key == tab %} aria-current="page"{% endif %}>{{ label }}</a></li>{% endfor -%}
+</ul></nav>{% endmacro %}
+{% macro flash_message(flash) %}{% if flash %}<p class="flash {{ flash[0] }}" id="flash" tabindex="-1" role="{{ 'alert' if flash[0] == 'error' else 'status' }}">{{ flash[1] }}</p>{% endif %}{% endmacro %}

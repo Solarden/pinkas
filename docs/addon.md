@@ -51,7 +51,8 @@ Set them once, on any character of the account (routes are shared by the whole a
 /pinkas routes                  (lists them)
 ```
 
-No route is set when you install the addon. A route with no recipient is skipped.
+No route is set when you install the addon. A route with no recipient is skipped. Once a route is set in the
+[Windows app](windows.md), the app's routes replace these, and `/pinkas route` says so.
 
 At a mailbox, open the **Send Mail** tab. The **Route mats** button sits just outside the right edge of
 the mail window. Each click fills one mail:

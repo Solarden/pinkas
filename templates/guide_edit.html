@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_settings.html" import flash_message %}
+{% block title %}edit the guide — pinkas{% endblock %}
+{# The editor enhances the textarea; without the script the form works as it is. #}
+{% block head %}<script src="/static/tiny-mde.js" defer></script>{% endblock %}
+{% block main %}
+<div class="titlebar"><h1>Edit the guide</h1></div>
+{{ flash_message(("error", error) if error else None) }}
+<div class="edit-grid">
+<form method="post" action="/guide/edit" class="editor">
+<input type="hidden" name="t" value="{{ token }}">
+<div class="panel">
+<label class="label" id="guide-label" for="guide-text">Your notes</label>
+<div class="tools" role="group" aria-label="Formatting" hidden>
+<button type="button" class="quiet" data-cmd="h2" aria-pressed="false">Heading</button>
+<button type="button" class="quiet" data-cmd="bold" aria-pressed="false">Bold</button>
+<button type="button" class="quiet" data-cmd="ul" aria-pressed="false">List</button>
+<button type="button" class="quiet" data-cmd="ol" aria-pressed="false">Numbered list</button>
+<button type="button" class="quiet" data-cmd="insertLink">Link</button>
+</div>
+<textarea id="guide-text" name="text" aria-describedby="guide-help" placeholder="Who plays next: the most rested character.&#10;Herbchar gathers herbs, Altchar sews bags.&#10;Open the mailbox and the bank before you log out.">{{ text }}</textarea>
+<div class="actions"><button>Save guide</button><a href="/guide">Discard changes</a></div>
+<p class="note muted" id="guide-help">Write as you like: each line stays a line. Up to 256 KB.</p>
+</div>
+</form>
+<aside class="edit-help" aria-label="Help with the guide">
+<div class="panel">
+<h2>What to write</h2>
+<ul>
+<li>Who plays next, and why</li>
+<li>Who gathers and who crafts</li>
+<li>What to buy, sell or keep</li>
+<li>Goals for this week</li>
+</ul>
+</div>
+<div class="panel">
+<h2>Formatting</h2>
+<dl class="kv">
+<dt><code>## Title</code></dt><dd>a heading</dd>
+<dt><code>**word**</code></dt><dd>bold</dd>
+<dt><code>- item</code></dt><dd>a list</dd>
+<dt><code>1. item</code></dt><dd>a numbered list</dd>
+<dt><code>[text](https://…)</code></dt><dd>a link</dd>
+</dl>
+<p class="note muted set">The buttons above the text add these for you.</p>
+</div>
+</aside>
+</div>
+{% endblock %}

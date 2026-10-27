@@ -9,9 +9,46 @@ local KINDS = {
   enchanting = { class = 7, subclass = 12 },
 }
 local ORDER = { "herb", "cloth", "leather", "ore", "enchanting" }
+local SET_IN_APP = "routes are set in the pinkas app, under Settings, Routes"
 
 local function say(text)
   print("|cff33ff99pinkas|r " .. text)
+end
+
+-- The app's routes, when it wrote any, replace those set with /pinkas route: all of them, so a material
+-- turned off in the app stays off.
+local function fromApp()
+  return type(ns.appRoutes) == "table"
+end
+
+local function routes()
+  return fromApp() and ns.appRoutes or PinkasDB.routes
+end
+
+-- A damaged file can hold anything here: only a name is a route.
+local function routeTo(kind)
+  local to = routes()[kind]
+  return type(to) == "string" and to ~= "" and to or nil
+end
+
+-- The routes in use, as the export carries them: the pull refuses a route that isn't a name, or of another kind.
+function ns.exportRoutes()
+  local inUse = {}
+  for _, kind in ipairs(ORDER) do
+    inUse[kind] = routeTo(kind)
+  end
+
+  return inUse
+end
+
+-- The app writes Name-Realm; a character of this realm is addressed by its name alone.
+local function recipient(to)
+  local name, realm = to:match("^([^-]+)-(.+)$")
+  if realm and realm:gsub("%s", ""):lower() == ns.char.realm:gsub("%s", ""):lower() then
+    return name
+  end
+
+  return to
 end
 
 local function bagItems(kind)
@@ -51,8 +88,8 @@ function ns.fillNextMail()
   for _, name in ipairs(ORDER) do
     -- No route ships with a recipient (a made-up name could be a real player's), and a character
     -- never mails itself, however the route was typed.
-    local to = PinkasDB.routes[name]
-    local items = (to and to ~= "" and ns.ownKey(to) ~= ns.key) and bagItems(KINDS[name]) or {}
+    local to = routeTo(name)
+    local items = (to and ns.ownKey(to) ~= ns.key) and bagItems(KINDS[name]) or {}
     if #items > 0 then
       local count = math.min(#items, ATTACHMENTS_MAX_SEND)
       for i = 1, count do
@@ -60,23 +97,28 @@ function ns.fillNextMail()
         ClickSendMailItemButton(i)
       end
       ClearCursor()
-      SendMailNameEditBox:SetText(to)
+      SendMailNameEditBox:SetText(recipient(to))
       SendMailSubjectEditBox:SetText(name)
-      say(("%d stacks of %s for %s - check and press Send"):format(count, name, to))
+      say(("%d stacks of %s for %s - check and press Send"):format(count, name, recipient(to)))
       return
     end
   end
-  say("nothing to route from this character (set routes with /pinkas route <kind> <Name>)")
+  say("nothing to route from this character" .. (fromApp() and "" or " (set routes with /pinkas route <kind> <Name>)"))
 end
 
 local function listRoutes()
   for _, name in ipairs(ORDER) do
-    say(name .. " -> " .. (PinkasDB.routes[name] or "(off)"))
+    local to = routeTo(name)
+    say(name .. " -> " .. (to and recipient(to) or "(off)"))
   end
 end
 
 local function command(input)
   local verb, kind, who = (input or ""):match("^%s*(%S*)%s*(%S*)%s*(%S*)")
+  if verb == "route" and KINDS[kind] and fromApp() then
+    say(SET_IN_APP)
+    return
+  end
   if verb == "route" and KINDS[kind] then
     PinkasDB.routes[kind] = who ~= "" and who or nil
     say(kind .. " -> " .. (who ~= "" and who or "(off)"))
@@ -86,7 +128,7 @@ local function command(input)
     listRoutes()
     return
   end
-  say("/pinkas route <herb|cloth|leather|ore|enchanting> <Name>  (no name turns it off)")
+  say(fromApp() and SET_IN_APP or "/pinkas route <herb|cloth|leather|ore|enchanting> <Name>  (no name turns it off)")
   say("/pinkas routes")
 end
 

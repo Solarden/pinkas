@@ -1,0 +1,47 @@
+# P9a: the non-interactive half of the Windows spike (tests/spike/README.md). Sleep, the folder dialog
+# and a real Windows 10 PC stay with the owner.
+name: spike-windows
+on:
+  workflow_dispatch:
+  push:
+    paths: [tests/spike/**, packaging/winpthread.py, .github/workflows/spike-windows.yml]
+permissions:
+  contents: read
+jobs:
+  spike:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Server 2022 is the closest runner to Windows 10, Server 2025 to Windows 11.
+        os: [windows-2022, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      PINKAS_SPIKE_DLLS: build/p9a/dlls
+      SPIKE: uv run --python 3.13 --with pixeltable-pgserver==0.6.0 --with pywebview==6.2.1 --with pyinstaller==6.22.3 --with tzdata==2026.5 python tests/spike/p9a.py
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: libwinpthread-1.dll
+        run: uv run --no-project --python 3.14 python packaging/winpthread.py build/p9a/dlls
+      - name: Postgres
+        run: $SPIKE pg
+      - name: Window
+        continue-on-error: true
+        run: $SPIKE window --close-after 3 --timeout 60
+      - name: Window without WebView2
+        continue-on-error: true
+        run: $SPIKE window --no-webview2 --timeout 30
+      - name: PyInstaller, frozen run, Defender
+        run: $SPIKE build
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: p9a-${{ matrix.os }}
+          path: |
+            build/p9a/report.json
+            build/p9a/suite.txt
+          if-no-files-found: warn

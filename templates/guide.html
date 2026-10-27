@@ -1,10 +1,14 @@
 {% extends "base.html" %}
+{% from "_settings.html" import flash_message %}
 {% block title %}guide — pinkas{% endblock %}
 {% block main_class %} class="read"{% endblock %}
 {% block main %}
-<h1>Guide</h1>
+<div class="titlebar"><h1>Guide</h1>{% if editable %}<a href="/guide/edit">{{ "Edit guide" if html is not none else "Write your guide" }}</a>{% endif %}</div>
+{{ flash_message(flash) }}
 {% if html is not none %}
 <div class="panel">{% include "_guide.html" %}</div>
+{% elif editable %}
+<div class="panel"><p>No guide yet. A guide is your own notes for your characters: who plays next, who crafts what, what to buy. It shows here and beside each character's page.</p></div>
 {% else %}
 <p class="muted">{{ message }}</p>{% endif %}
 {% endblock %}

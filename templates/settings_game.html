@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% from "_settings.html" import tabs, flash_message %}
+{% block title %}settings: game — pinkas{% endblock %}
+{# Reloads only while waiting for the first character, so a choice being made isn't reloaded away. #}
+{% set waiting = setup and setup.game and setup.addon %}
+{% block head %}{% if waiting %}<meta http-equiv="refresh" content="5; url=/settings/game">{% endif %}{% endblock %}
+{% block main %}
+{{ tabs(tab, desktop) }}
+{{ flash_message(flash) }}
+<p class="note muted">pinkas reads what the addon saves when you log out or type <code>/reload</code>. It installs and updates only its own addon, and never changes the game's files or settings.</p>
+{% if setup %}
+<div class="panel">
+<h2>Getting started</h2>
+<ol class="steps">
+<li>{% if setup.game %}<span class="pill pos">done</span> Game folder found{% else %}<span class="pill warn">to do</span> Choose the game folder, below{% endif %}</li>
+<li>{% if setup.addon %}<span class="pill pos">done</span> Addon installed{% else %}<span class="pill warn">to do</span> Install the addon, below{% endif %}</li>
+<li><span class="pill warn">{{ "waiting" if waiting else "then" }}</span> Log in with a character, then log out or type <code>/reload</code>.{% if waiting %} This page checks again every 5 seconds.{% endif %}</li>
+</ol>
+</div>
+{% endif %}
+<div class="cards">
+<form class="panel" method="post" action="/settings/game">
+<input type="hidden" name="t" value="{{ token }}">
+<h2>Game folder</h2>
+{% if game %}
+<p class="path">{{ game }}</p>
+{% if files %}
+<table class="files">
+<caption class="sr-only">What pinkas read from each account</caption>
+<thead><tr><th scope="col">Account</th><th scope="col">Last read</th><th scope="col">Result</th></tr></thead>
+<tbody>
+{% for f in files %}<tr><td>{{ f.account }}</td><td>{{ f.read_at|ago }}</td><td>{% if f.status == "ok" %}<span class="pill pos">ok</span>{% if f.characters is not none %} {{ f.characters }} character{{ "" if f.characters == 1 else "s" }}{% endif %}{% elif f.status == "too-large" %}<span class="pill warn">too large</span> over 5 MB, skipped{% elif f.status == "parse-failed" %}<span class="pill neg">damaged</span> skipped{% else %}<span class="pill neg">unreadable</span> skipped{% endif %}</td></tr>
+{% endfor %}</tbody>
+</table>
+{% if files|rejectattr("status", "equalto", "ok")|list %}<p class="note muted set">Your characters from the last good read are kept. Log in and out once with that account to fix it. Need help? Send the log: it holds no passwords and no character names.</p>{% endif %}
+{% else %}
+<p class="muted">No file from the addon yet. Log in with a character, then log out or type <code>/reload</code>.</p>
+{% endif %}
+<div class="actions"><button class="quiet" name="log">Open the log folder</button><button class="quiet" name="choose">Choose folder…</button></div>
+{% else %}
+{% if missing %}<p><span class="pill neg">missing</span> The saved folder is gone: was the game moved or uninstalled? Your characters are kept.</p>
+<p class="path">{{ missing }}</p>
+{% endif %}
+{% if candidates %}
+<p>Found {{ candidates|length }} game version{{ "" if candidates|length == 1 else "s" }}.</p>
+<fieldset class="choice">
+<legend>Pick the one you play</legend>
+{% for c in candidates %}<label><input type="radio" name="game" value="{{ loop.index0 }}"{% if loop.first %} checked{% endif %}> <span><code>{{ c }}</code></span></label>
+{% endfor %}</fieldset>
+<div class="actions"><button>Use this version</button><button class="quiet" name="choose">Choose folder…</button><button class="quiet" name="log">Open the log folder</button></div>
+{% else %}
+{% if not missing %}<p>No game found in Program Files. Choose the folder of the game version you play, such as <code>World of Warcraft\_classic_</code>.</p>{% endif %}
+<div class="actions"><button name="choose">Choose folder…</button><button class="quiet" name="log">Open the log folder</button></div>
+{% endif %}
+{% endif %}
+</form>
+{% if game %}
+<form class="panel" method="post" action="/settings/addon">
+<input type="hidden" name="t" value="{{ token }}">
+<h2>Addon</h2>
+{% if not addon.installed %}<p><span class="pill warn">not installed</span> pinkas needs its addon in the game to see your characters.</p>
+{% elif addon.installed != addon.newest %}<p><span class="pill warn">out of date</span> A newer addon came with this app.</p>
+{% else %}<p><span class="pill pos">up to date</span></p>{% endif %}
+<dl class="kv">
+<dt>Installed</dt><dd>{{ addon.installed or "none" }}</dd>
+<dt>Newest</dt><dd>{{ addon.newest }}</dd>
+</dl>
+<div class="actions">{% if not addon.installed %}<button>Install addon</button>{% elif addon.installed != addon.newest %}<button>Update addon</button>{% else %}<button class="quiet">Reinstall</button>{% endif %}</div>
+<p class="note muted">Changes only the pinkas addon. Your other addons and game settings stay as they are.</p>
+</form>
+{% endif %}
+</div>
+{% endblock %}

@@ -14,8 +14,8 @@ from tests.db import DSN, migrate
 from tests.web_client import CONF, Client
 
 TABLES = (
-    "pinkas_session_totals, pinkas_events, pinkas_snapshots, pinkas_targets, pinkas_pull_state,"
-    " pinkas_characters, pinkas_files"
+    "pinkas_session_totals, pinkas_events, pinkas_snapshots, pinkas_targets, pinkas_pull_state, pinkas_routes,"
+    " pinkas_guide, pinkas_characters, pinkas_files"
 )
 
 

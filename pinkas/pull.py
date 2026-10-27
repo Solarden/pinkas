@@ -125,33 +125,41 @@ def run(conn, source: str, probe: str | None, log: Callable) -> int:
 
         return 0
 
+    status, _ = store(conn, lambda: fetch(source), log)
+
+    return 0 if status == "ok" else 1
+
+
+def store(conn, read: Callable[[], bytes], log: Callable) -> tuple[str, dict | None]:
+    """Reads one file, ingests it and records the outcome; returns its pull_state status and ingest's counts.
+    The Windows app's watcher calls this too, so its files show in the nerd panel the same way."""
     try:
-        body = fetch(source)
+        body = read()
         counts = ingest(conn, body, datetime.now(UTC))
     except Failure as failure:
         record_state(conn, failure.status, log)
         print(failure.status)
 
-        return 1
+        return failure.status, None
     # ParseError is a ValueError; a value the driver or Postgres refuses is the file's fault too.
     except (ValueError, psycopg2.DataError):
         record_state(conn, "parse-failed", log)
         print("parse-failed")
 
-        return 1
+        return "parse-failed", None
 
     record_state(conn, "ok", log)
-    digest = counts.pop("sha256")[:12]
+    digest = counts["sha256"][:12]
     if counts["unchanged"]:
         print(f"unchanged {digest}")
 
-        return 0
+        return "ok", counts
 
-    summary = " ".join(f"{k}={v}" for k, v in counts.items() if k != "unchanged")
+    summary = " ".join(f"{k}={v}" for k, v in counts.items() if k not in ("sha256", "unchanged"))
     print(f"ingested {digest} {summary}")
     log("ok", f"ingested {summary}")
 
-    return 0
+    return "ok", counts
 
 
 def main() -> int:

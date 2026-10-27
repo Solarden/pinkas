@@ -3,7 +3,7 @@
 {% import "_charts.html" as chart %}
 {% block title %}{{ c.name }} — pinkas{% endblock %}
 {% macro items(list) %}<ul class="plain">{% for it in list %}<li>{{ name(it) }}<span class="count">{{ it.count }}</span></li>{% else %}<li class="muted">empty</li>{% endfor %}</ul>{% endmacro %}
-{% macro groups(list) %}{% for g in list %}<div class="group"><span class="label"><span>{{ g.label }}{% if g.who %} <a href="/c/{{ c.realm|pathpart }}/{{ g.who|pathpart }}">{{ g.to }}</a>{% elif g.to %} {{ g.to }}{% endif %}</span><span>{{ g.slots }} slot{% if g.slots != 1 %}s{% endif %}</span></span>
+{% macro groups(list) %}{% for g in list %}<div class="group"><span class="label"><span>{{ g.label }}{% if g.who %} <a href="/c/{{ g.who.realm|pathpart }}/{{ g.who.name|pathpart }}">{{ g.who.name }}</a>{% elif g.to %} {{ g.to }}{% endif %}</span><span>{{ g.slots }} slot{% if g.slots != 1 %}s{% endif %}</span></span>
 {{ items(g["items"]) }}</div>{% else %}<p class="muted note">empty</p>{% endfor %}{% endmacro %}
 {% macro used(s) %}<span class="sr">, </span><span class="count">{{ s.used }}{% if s.total %}/{{ s.total }}{% endif %} slots</span>{% endmacro %}
 {% macro slots(s, what) %}{% if s.total %}<meter class="slots" min="0" max="{{ s.total }}" low="{{ s.low }}" high="{{ s.high }}" optimum="0" value="{{ s.used }}" aria-label="{{ what }} slots used: {{ s.used }} of {{ s.total }}"></meter>{% endif %}{% endmacro %}
@@ -30,7 +30,7 @@
 {% for p in planned %}<div class="prof"><span class="n">{{ p.name }}</span><span class="note">planned, not learned · up to {{ p.upto }}</span></div>{% endfor %}
 {% if c.professions|selectattr("secondary")|list %}<h2 class="sub">Secondary</h2>
 {% for p in c.professions|selectattr("secondary") %}{{ prof(p, c.name) }}{% endfor %}{% endif %}
-<p class="muted note set"><a href="/settings">Set targets</a></p>
+<p class="muted note set"><a href="/settings/characters">Set targets</a></p>
 </section>
 
 <section class="panel">
