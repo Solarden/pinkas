@@ -1,0 +1,2 @@
+# The client writes SavedVariables with CRLF line ends; the fixtures keep its exact bytes.
+tests/fixtures/*.lua -text

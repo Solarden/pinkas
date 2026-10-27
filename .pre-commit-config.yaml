@@ -13,3 +13,22 @@ repos:
         args: ['--maxkb=5000']
       - id: check-merge-conflict
       - id: check-yaml
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  - repo: https://github.com/JohnnyMorganz/StyLua
+    rev: v2.6.0
+    hooks:
+      - id: stylua-github
+        # The fixtures are the client's own bytes.
+        exclude: ^tests/fixtures/
+
+  # The luacheck on PATH (`brew install luacheck`): the hook in luacheck's own repo needs luarocks.
+  - repo: local
+    hooks:
+      - id: luacheck
+        name: luacheck
+        entry: luacheck
+        language: system
+        types: [lua]
+        exclude: ^tests/fixtures/
