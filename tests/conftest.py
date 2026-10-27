@@ -1,26 +1,17 @@
 """The database tests run against the throwaway Postgres from docker-compose.test.yml.
 
-Only the tests that ask for `conn` need it; the parser and rested tests run without one.
+Only the tests that use `database`, `conn` or `owner` need it; the parser and rested tests run without one.
 """
-
-import os
-from pathlib import Path
 
 import psycopg2
 import pytest
-from alembic.config import main as alembic
 
-DSN = os.environ.get("PINKAS_TEST_DATABASE_URL", "postgresql://pinkas_test:pinkas_test@127.0.0.1:55434/pinkas_test")
-ROOT = Path(__file__).parent.parent
+from tests.db import DSN, migrate
+
 TABLES = (
     "pinkas_session_totals, pinkas_events, pinkas_snapshots, pinkas_targets, pinkas_pull_state,"
     " pinkas_characters, pinkas_files"
 )
-
-
-def migrate(*args: str) -> None:
-    os.environ["MIGRATE_DATABASE_URL"] = DSN
-    alembic(argv=["-c", str(ROOT / "alembic.ini"), *args])
 
 
 @pytest.fixture(scope="session")
@@ -28,8 +19,12 @@ def database():
     """A fresh schema, migrated by the test user, which plays the table owner."""
     try:
         admin = psycopg2.connect(DSN, connect_timeout=3)
-    except psycopg2.OperationalError as exc:
-        pytest.exit(f"test database unreachable - run `docker compose -f docker-compose.test.yml up -d --wait`: {exc}")
+    # The class name only: a driver message can quote the DSN.
+    except psycopg2.Error as exc:
+        pytest.exit(
+            f"test database unreachable ({type(exc).__name__}) - run"
+            " `docker compose -f docker-compose.test.yml up -d --wait`, or check PINKAS_TEST_DATABASE_URL"
+        )
     admin.autocommit = True
     # The schema is dropped next: never on a database that isn't named as a test one.
     if not admin.info.dbname.endswith("_test"):

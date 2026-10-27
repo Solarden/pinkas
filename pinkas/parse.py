@@ -156,11 +156,17 @@ def check(value, spec, path: str) -> None:
         raise ParseError(f"{path}: expected {spec}")
 
 
+def not_json(constant: str):
+    raise ParseError("the export holds NaN or Infinity, which JSON has no value for")
+
+
 def parse(body: bytes) -> dict:
     try:
-        export = json.loads(export_text(body))
+        export = json.loads(export_text(body), parse_constant=not_json)
     except json.JSONDecodeError as exc:
         raise ParseError(f"the export is not JSON (column {exc.colno})") from None
+    except RecursionError:
+        raise ParseError("the export is nested too deeply") from None
 
     check(export, {"v": INT, "exported_at": INT, "routes": OBJ, "chars": OBJ}, "export")
     if export["v"] != 1:
@@ -171,5 +177,10 @@ def parse(body: bytes) -> dict:
         check(char, CHARACTER, f"chars[{i}]")
         if key != f"{char['realm']}/{char['name']}":
             raise ParseError(f"chars[{i}]: the key is not realm/name")
+
+        # Session totals are upserted, and one statement can't update a row twice; the addon keys them uniquely.
+        keys = [(t["session"], t["kind"], t["key"]) for t in char["totals"]]
+        if len(keys) != len(set(keys)):
+            raise ParseError(f"chars[{i}].totals: a session total appears twice")
 
     return export

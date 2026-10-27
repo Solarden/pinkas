@@ -21,4 +21,5 @@ def account() -> dict:
 def with_export(export: dict) -> bytes:
     """A file holding `export`, written the way the client writes one."""
     text = json.dumps(export, ensure_ascii=False).replace("\\", "\\\\").replace('"', '\\"')
+
     return b'\r\nPinkasDB = {\r\n["export"] = "' + text.encode() + b'",\r\n["v"] = 1,\r\n}\r\n'
