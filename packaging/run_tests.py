@@ -11,7 +11,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import psycopg2
@@ -23,8 +22,9 @@ sys.path.insert(0, str(ROOT))
 os.environ["PATH"] = f"{ROOT / 'build' / 'dlls'}{os.pathsep}{os.environ['PATH']}"
 
 from pinkas import postgres  # noqa: E402
+from tests.files import server_folder  # noqa: E402
 
-base = Path(tempfile.mkdtemp(prefix="pinkas-tests-"))
+base = server_folder()
 server = postgres.start(base)
 password = json.loads((base / "secrets.json").read_text(encoding="utf-8"))["postgres"]
 admin = psycopg2.connect(postgres.dsn(server.port, "postgres", password, "postgres"))

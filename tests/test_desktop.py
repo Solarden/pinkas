@@ -18,7 +18,7 @@ from pinkas import desktop, postgres, web
 from pinkas.ingest import ingest
 from pinkas.parse import MAX_BYTES
 from tests.db import DSN
-from tests.files import fixture, link_file, link_folder
+from tests.files import fixture, link_file, link_folder, server_folder
 
 
 def saved(game, account="ACCOUNT", name="Pinkas.lua"):
@@ -695,8 +695,9 @@ def test_the_log_stamps_each_line_and_starts_over_past_its_limit(tmp_path, monke
     assert all(line[4] == "-" and line[19] == " " for line in lines)
 
 
-def test_the_apps_database_has_the_servers_grants(tmp_path):
-    server = postgres.start(tmp_path)
+def test_the_apps_database_has_the_servers_grants():
+    base = server_folder()
+    server = postgres.start(base)
 
     try:
         desktop.migrate(server.owner_dsn)
@@ -707,7 +708,8 @@ def test_the_apps_database_has_the_servers_grants(tmp_path):
             with pytest.raises(psycopg2.errors.InsufficientPrivilege):
                 cur.execute("UPDATE pinkas_snapshots SET data = data")
     finally:
-        postgres.stop(tmp_path / "pg")
+        postgres.stop(base / "pg")
+        shutil.rmtree(base, ignore_errors=True)
 
 
 def test_log_lines_from_two_threads_stay_whole(tmp_path):

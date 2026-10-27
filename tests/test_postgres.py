@@ -1,6 +1,7 @@
 """The Windows app's Postgres launcher, against the bundled binaries. One server, so the tests run in order."""
 
 import json
+import shutil
 import sys
 
 import psutil
@@ -8,13 +9,23 @@ import psycopg2
 import pytest
 
 from pinkas import postgres
+from tests.files import server_folder
 
 
 @pytest.fixture(scope="module")
-def base(tmp_path_factory):
-    base = tmp_path_factory.mktemp("desktop")
+def base():
+    base = server_folder()
     yield base
     postgres.stop(base / "pg")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+@pytest.fixture
+def fresh():
+    folder = server_folder()
+    yield folder
+    postgres.stop(folder / "pg")
+    shutil.rmtree(folder, ignore_errors=True)
 
 
 def server_pids(base) -> list[int]:
@@ -92,15 +103,15 @@ def test_stop_leaves_no_server(base):
     assert server_pids(base) == []
 
 
-def test_a_lost_passwords_file_is_refused_not_replaced(tmp_path):
-    postgres.start(tmp_path)
-    postgres.stop(tmp_path / "pg")
-    (tmp_path / "secrets.json").unlink()
+def test_a_lost_passwords_file_is_refused_not_replaced(fresh):
+    postgres.start(fresh)
+    postgres.stop(fresh / "pg")
+    (fresh / "secrets.json").unlink()
 
     with pytest.raises(postgres.LostSecrets):
-        postgres.start(tmp_path)
+        postgres.start(fresh)
 
-    assert not (tmp_path / "secrets.json").exists()
+    assert not (fresh / "secrets.json").exists()
 
 
 def test_postgres_log_starts_over_past_its_limit(base):
