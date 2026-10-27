@@ -24,6 +24,13 @@ household of alts that feed each other materials.
 pinkas only reads files the game already writes, the way log uploaders do. It does not automate
 play, and it sends nothing anywhere: your data stays on your own machines.
 
+## On Windows, without a server
+
+One installer, and pinkas runs on the same PC as the game, in its own window: it installs its addon,
+reads what the game saves, and keeps everything in `%LOCALAPPDATA%\pinkas`. Download it only from this
+repository's [Releases](https://github.com/Solarden/pinkas/releases) page; [the Windows app](docs/windows.md)
+walks through the install and what Windows may say about it.
+
 ## Documentation
 
 | | |
@@ -31,7 +38,8 @@ play, and it sends nothing anywhere: your data stays on your own machines.
 | [The addon](docs/addon.md) | install it, set routes, what it records |
 | [Self-hosting](docs/self-hosting.md) | run the pull and the page on your own server |
 | [Privacy](docs/privacy.md) | what is stored, what never is, and where it goes |
-| [Windows app](docs/windows.md) | **planned:** one installer for players who don't run a server |
+| [Windows app](docs/windows.md) | one installer for players who don't run a server |
+| [Code signing policy](docs/code-signing.md) | what is signed, by whom, and who approves it |
 
 ## Status
 
@@ -49,6 +57,11 @@ docker compose -f docker-compose.test.yml up -d --wait     # once: a throwaway P
 uv run pytest -q                                           # parser, ingest, pull, pages
 pre-commit run --all-files                                 # secrets, StyLua, luacheck, ruff
 ```
+
+## Code signing policy
+
+Free code signing provided by SignPath.io, certificate by SignPath Foundation, once the Foundation
+accepts the project. Who builds, reviews and approves each signed release: [Code signing policy](docs/code-signing.md).
 
 ## License
 

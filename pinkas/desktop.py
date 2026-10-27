@@ -6,6 +6,7 @@ Closing the window ends the app: the watcher, the web server, then Postgres.
 The log holds counts and hashes only, never a path: the game's folders carry the account's name.
 """
 
+import http.cookiejar
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +32,10 @@ WATCH_SECONDS = 5
 LOG_LIMIT = 1_000_000
 WINDOW_SECONDS = 20
 RELAUNCHED = "--relaunched"
+# packaging/pinkas.iss names it as AppMutex: setup and uninstall ask to close pinkas while it exists.
+APP_MUTEX = "pinkas"
+# The release build's check: the pages without a window, the outcome in the log (a relaunched run has no console).
+SELF_TEST = "--self-test"
 # TODO(launch): the live client's registry key may name its folder; these are the installer's defaults.
 GAME_ROOTS = (Path(r"C:\Program Files (x86)\World of Warcraft"), Path(r"C:\Program Files\World of Warcraft"))
 WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
@@ -76,6 +82,10 @@ def take_lock(path: Path):
             import msvcrt
 
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            import ctypes
+
+            # Never closed: Windows drops it when this process ends, which is when setup may go on.
+            ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX)
         else:
             import fcntl
 
@@ -88,8 +98,16 @@ def take_lock(path: Path):
     return handle
 
 
+def is_folder(path: Path) -> bool:
+    # Windows won't look through a junction it doesn't trust (WinError 448): no folder pinkas can use.
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def is_game(folder: Path) -> bool:
-    return (folder / "Interface").is_dir() or (folder / "WTF").is_dir()
+    return is_folder(folder / "Interface") or is_folder(folder / "WTF")
 
 
 def looks_like_game(folder: Path) -> bool:
@@ -97,7 +115,7 @@ def looks_like_game(folder: Path) -> bool:
     accept: a `_<flavor>_` folder, or one holding both."""
     named = folder.name.startswith("_") and folder.name.endswith("_") and len(folder.name) > 2
 
-    return is_game(folder) and (named or ((folder / "Interface").is_dir() and (folder / "WTF").is_dir()))
+    return is_game(folder) and (named or (is_folder(folder / "Interface") and is_folder(folder / "WTF")))
 
 
 def games(roots) -> list[Path]:
@@ -530,7 +548,8 @@ def tell(text: str) -> None:
     """A message box: the app has no console."""
     print(text)
 
-    if postgres.WINDOWS:
+    # Nobody would close it: the self-test runs unattended, in the release build's check.
+    if postgres.WINDOWS and SELF_TEST not in sys.argv:
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(None, text, "pinkas", 0x40)
@@ -582,8 +601,9 @@ def leave_elevation(argv: list[str]) -> int | None:
 
     # Only the installed exe: `python -m` would start in runas's own folder, where pinkas isn't importable.
     if RELAUNCHED not in argv and getattr(sys, "frozen", False):
-        # The 8.3 name has no spaces, so runas gets no quotes nested in its own.
-        program = subprocess.list2cmdline([postgres.short(Path(sys.executable)), RELAUNCHED])
+        # The 8.3 name has no spaces, so runas gets no quotes nested in its own; only known flags go along.
+        program = subprocess.list2cmdline([postgres.short(Path(sys.executable)), RELAUNCHED,
+                                           *(arg for arg in argv if arg == SELF_TEST)])
 
         if subprocess.run(["runas", "/trustlevel:0x20000", program], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode == 0:
@@ -592,6 +612,19 @@ def leave_elevation(argv: list[str]) -> int | None:
     tell("pinkas can't run with administrator rights. Start it the usual way, from the Start menu.")
 
     return 1
+
+
+def self_test(url: str) -> bool:
+    """The launch token opens a session, and the Game tab answers inside it."""
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    try:
+        opener.open(url, timeout=30).close()
+
+        with opener.open(url.split("/start")[0] + "/settings/game", timeout=30) as page:
+            return b"Game folder" in page.read()
+    except OSError:
+        return False
 
 
 def main() -> int:
@@ -639,7 +672,14 @@ def main() -> int:
         stop = threading.Event()
         watcher = threading.Thread(target=watch, args=(app, server.app_dsn, stop), daemon=True)
         watcher.start()
-        open_window(app, url, lambda: web.launch_url(httpd))
+
+        if SELF_TEST in sys.argv:
+            passed = self_test(url)
+            print("self-test " + ("passed" if passed else "failed"))
+        else:
+            passed = True
+            open_window(app, url, lambda: web.launch_url(httpd))
+
         stop.set()
         watcher.join(WATCH_SECONDS * 2)
         httpd.shutdown()
@@ -653,7 +693,7 @@ def main() -> int:
         postgres.stop(APP_DIR / "pg")
         print("stopped")
 
-    return 0
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

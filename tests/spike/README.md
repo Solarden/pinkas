@@ -35,12 +35,12 @@ Close and reopen PowerShell so both are on the PATH, then:
 git clone https://github.com/Solarden/pinkas
 cd pinkas
 git switch p9-desktop
-uv run --no-project --python 3.14 python tests/spike/winpthread.py
+uv run --no-project --python 3.14 python packaging/winpthread.py build/p9a/dlls
 $env:PINKAS_SPIKE_DLLS = "$PWD\build\p9a\dlls"
 function spike { uv run --python 3.13 --with pixeltable-pgserver==0.6.0 --with pywebview==6.2.1 --with pyinstaller==6.22.3 --with tzdata==2026.5 python tests/spike/p9a.py @args }
 ```
 
-`winpthread.py` fetches the one DLL the packaged Postgres 18 lacks (below). The last two lines last
+`packaging/winpthread.py` fetches the one DLL the packaged Postgres 18 lacks (below). The last two lines last
 for this PowerShell window; type them again in a new one. The first `spike`
 downloads Python 3.13 and the packages (a few hundred MB, once).
 

@@ -3,6 +3,7 @@
 import copy
 import http.client
 import re
+import sys
 import threading
 from datetime import UTC, datetime
 
@@ -10,11 +11,11 @@ import psycopg2
 import pytest
 
 from pinkas import web
-from pinkas.desktop import App, app_routes_lua
+from pinkas.desktop import App, app_routes_lua, self_test
 from pinkas.ingest import ingest
 from pinkas.parse import ROUTE_KINDS
 from tests.db import DSN
-from tests.files import KEY, account, fixture, with_export
+from tests.files import KEY, account, fixture, link_folder, with_export
 from tests.web_client import XSS, XSS_ESCAPED, Client
 
 
@@ -112,6 +113,13 @@ def opened(desktop, tmp_path, monkeypatch):
     return desktop
 
 
+def test_the_self_test_reads_the_game_tab_through_the_launch_token(desktop):
+    url = f"http://{desktop.server.conf.desktop_host}{desktop.start}"
+
+    assert self_test(url)
+    assert not self_test(url), "the token works once"
+
+
 def test_the_window_opens_where_the_app_says(desktop):
     desktop.server.first_page = "/settings/game"
 
@@ -202,6 +210,7 @@ def test_without_a_window_choosing_a_folder_says_why(opened):
     assert "needs Microsoft Edge WebView2" in body
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows folder name can't hold < or >")
 def test_account_and_folder_names_stay_text(opened, conn):
     hostile = "<img src=x onerror=alert(1)>"
     folder = opened.root / hostile
@@ -238,7 +247,7 @@ def test_a_link_in_the_way_says_to_remove_it(opened, tmp_path):
     addons = opened.root / "_classic_" / "Interface" / "AddOns"
     addons.mkdir()
     (tmp_path / "store").mkdir()
-    (addons / "Pinkas").symlink_to(tmp_path / "store", target_is_directory=True)
+    link_folder(addons / "Pinkas", tmp_path / "store")
     response = opened.post("/settings/addon", {"t": opened.token})
     body = opened.get(response.headers["Location"]).body
 
@@ -313,7 +322,7 @@ def test_a_link_in_the_way_of_the_routes_says_to_remove_it(opened, characters, t
     addons = opened.root / "_classic_" / "Interface" / "AddOns"
     addons.mkdir()
     (tmp_path / "store").mkdir()
-    (addons / "Pinkas").symlink_to(tmp_path / "store", target_is_directory=True)
+    link_folder(addons / "Pinkas", tmp_path / "store")
     response = opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"]))
     body = opened.get(response.headers["Location"]).body
 

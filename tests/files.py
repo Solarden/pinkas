@@ -1,12 +1,32 @@
 """Pinkas.lua files for the tests: the beta fixtures and variants built from them."""
 
 import json
+import os
+import sys
 from pathlib import Path
 
 from pinkas.parse import parse
 
 FIXTURES = Path(__file__).parent / "fixtures"
 KEY = "Testrealm/Fakechar"
+
+
+def link_folder(link: Path, target: Path) -> None:
+    """A junction on Windows: a symlink there needs a privilege a friend's account doesn't have."""
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def link_file(link: Path, target: Path) -> None:
+    """A hard link on Windows, for the same reason."""
+    if sys.platform == "win32":
+        os.link(target, link)
+    else:
+        link.symlink_to(target)
 
 
 def fixture(name: str) -> bytes:

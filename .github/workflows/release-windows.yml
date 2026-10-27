@@ -1,0 +1,122 @@
+# The Windows installer: built on a version tag, checked by installing and starting it, and attached to a
+# draft release with its SHA-256 for the owner to publish.
+name: release-windows
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # SignPath's action reads this run and its artifacts with the job's token.
+      actions: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SIGNING: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      - name: Version
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME.TrimStart("v") } else { "0.0.0" }
+          # Windows' version resource takes three numbers (packaging/build.py): fail before the tests, not after.
+          if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "$version`: a release tag is v and three numbers, as in v1.0.0" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+      - name: libwinpthread-1.dll
+        run: uv run --no-project --python 3.14 python packaging/winpthread.py
+      - name: Tests against the app's own Postgres
+        run: uv run --python 3.13 --frozen python packaging/run_tests.py -q
+      - name: App
+        run: uv run --python 3.13 --frozen --exact --no-dev --group release python packaging/build.py app $env:VERSION
+      - id: app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: app-unsigned
+          path: build/pyinstaller/dist/pinkas
+          if-no-files-found: error
+      # Only a tag's build asks (docs/code-signing.md), once the SIGNPATH_ORGANIZATION_ID variable and the
+      # SIGNPATH_API_TOKEN secret exist; each request waits for the owner's approval in SignPath.
+      - name: Sign the app
+        if: env.SIGNING == 'true' && github.ref_type == 'tag'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: pinkas
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: app
+          github-artifact-id: ${{ steps.app.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build/pyinstaller/dist/pinkas
+      - name: Installer
+        run: uv run --python 3.13 --frozen --exact --no-dev --group release python packaging/build.py installer $env:VERSION
+      - id: installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer-unsigned
+          path: build/pinkas-setup-*.exe
+          if-no-files-found: error
+      - name: Sign the installer
+        if: env.SIGNING == 'true' && github.ref_type == 'tag'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: pinkas
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.installer.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 1800
+          output-artifact-directory: build
+      - name: Install and self-test
+        run: |
+          $setup = (Get-ChildItem build\pinkas-setup-*.exe).FullName
+          if ($env:SIGNING -eq "true" -and $env:GITHUB_REF_TYPE -eq "tag" -and (Get-AuthenticodeSignature $setup).Status -ne "Valid") {
+            throw "installer not signed"
+          }
+          Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait
+          $app = "$env:LOCALAPPDATA\Programs\pinkas"
+          $log = "$env:LOCALAPPDATA\pinkas\pinkas.log"
+          # An elevated start (the runner is an administrator) hands over to a relaunch and ends: wait for its log.
+          # A failed relaunch ends with 1 and, by design, writes nothing.
+          $first = Start-Process "$app\pinkas.exe" -ArgumentList "--self-test" -Wait -PassThru
+          if ($first.ExitCode -ne 0 -and -not (Test-Path $log)) { throw "pinkas.exe ended with $($first.ExitCode) before writing its log: the relaunch failed" }
+          $deadline = (Get-Date).AddMinutes(5)
+          while (-not ((Test-Path $log) -and (Select-String -Path $log -Pattern "stopped" -Quiet)) -and (Get-Date) -lt $deadline) {
+            Start-Sleep 2
+          }
+          Get-Content $log -ErrorAction SilentlyContinue
+          if (-not (Select-String -Path $log -Pattern "self-test passed" -Quiet)) { throw "self-test did not pass" }
+          if (Get-Process postgres -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$app\*" }) { throw "Postgres left running" }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer
+          path: build/pinkas-setup-*.exe
+          if-no-files-found: error
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installer
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          file=$(ls pinkas-setup-*.exe)
+          sum=$(sha256sum "$file" | cut -d' ' -f1)
+          gh release create "$GITHUB_REF_NAME" "$file" --repo "$GITHUB_REPOSITORY" --draft --title "pinkas $GITHUB_REF_NAME" \
+            --notes "Windows installer. SHA-256 of $file: $sum. Free code signing provided by SignPath.io, certificate by SignPath Foundation, once it accepts the project: https://github.com/$GITHUB_REPOSITORY/blob/main/docs/code-signing.md"

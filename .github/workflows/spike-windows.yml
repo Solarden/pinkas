@@ -4,7 +4,7 @@ name: spike-windows
 on:
   workflow_dispatch:
   push:
-    paths: [tests/spike/**, .github/workflows/spike-windows.yml]
+    paths: [tests/spike/**, packaging/winpthread.py, .github/workflows/spike-windows.yml]
 permissions:
   contents: read
 jobs:
@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       - name: libwinpthread-1.dll
-        run: uv run --no-project --python 3.14 python tests/spike/winpthread.py
+        run: uv run --no-project --python 3.14 python packaging/winpthread.py build/p9a/dlls
       - name: Postgres
         run: $SPIKE pg
       - name: Window

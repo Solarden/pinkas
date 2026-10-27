@@ -18,7 +18,7 @@ from pinkas import desktop, postgres, web
 from pinkas.ingest import ingest
 from pinkas.parse import MAX_BYTES
 from tests.db import DSN
-from tests.files import fixture
+from tests.files import fixture, link_file, link_folder
 
 
 def saved(game, account="ACCOUNT", name="Pinkas.lua"):
@@ -207,8 +207,10 @@ class Calls(list):
 
 @pytest.fixture
 def relaunch(monkeypatch):
-    """An elevated start of the installed exe; runas is recorded, not run."""
+    """An elevated start of the installed exe; runas is recorded, not run, and so is a message box."""
     calls = Calls()
+    calls.told = []
+    monkeypatch.setattr(desktop, "tell", calls.told.append)
     monkeypatch.setattr(desktop.postgres, "is_elevated", lambda: True)
     monkeypatch.setattr(desktop.sys, "frozen", True, raising=False)
     monkeypatch.setattr(desktop.subprocess, "run",
@@ -220,8 +222,9 @@ def relaunch(monkeypatch):
 def test_an_elevated_start_starts_the_exe_again_without_admin_rights(relaunch):
     exe = desktop.postgres.short(Path(sys.executable))
 
-    assert desktop.leave_elevation([]) == 0
-    assert relaunch == [["runas", "/trustlevel:0x20000", subprocess.list2cmdline([exe, desktop.RELAUNCHED])]]
+    assert desktop.leave_elevation([desktop.SELF_TEST, "a b", '"']) == 0
+    assert relaunch == [["runas", "/trustlevel:0x20000",
+                         subprocess.list2cmdline([exe, desktop.RELAUNCHED, desktop.SELF_TEST])]], "with its own flags"
 
 
 @pytest.mark.parametrize("case", ["relaunched and still elevated", "runas failed", "not the installed exe"])
@@ -253,7 +256,7 @@ def test_an_elevated_start_creates_nothing_before_it_starts_again(relaunch, monk
 @pytest.fixture
 def installed(tmp_path, monkeypatch):
     """A game, the app's addon from this repo, and an app pointed at both."""
-    folder = game(tmp_path, "_classic_", "Interface/AddOns/Other")
+    folder = game(tmp_path, "_classic_", "Interface/AddOns/Other", "WTF")
     app = desktop.App(tmp_path)
     app.save_game(folder)
 
@@ -261,7 +264,22 @@ def installed(tmp_path, monkeypatch):
 
 
 def files_under(folder):
-    return sorted(str(p.relative_to(folder)) for p in folder.rglob("*"))
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*"))
+
+
+def test_a_folder_windows_wont_look_into_is_no_folder(tmp_path, monkeypatch):
+    folder = game(tmp_path, "_classic_", "WTF")
+    is_dir = Path.is_dir
+
+    def untrusted(self):
+        if self.name == "Interface":
+            raise OSError(448, "The path cannot be traversed because it contains an untrusted mount point")
+
+        return is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", untrusted)
+
+    assert desktop.is_game(folder)
 
 
 def test_the_addon_is_copied_into_its_own_folder_and_nowhere_else(installed):
@@ -308,7 +326,7 @@ def test_a_link_on_the_way_to_the_addon_is_refused(installed, tmp_path, link):
     target = folder / link
     shutil.rmtree(target, ignore_errors=True)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.symlink_to(outside, target_is_directory=True)
+    link_folder(target, outside)
 
     assert app.install(dict) == "refused"
     assert list(outside.iterdir()) == []
@@ -405,7 +423,7 @@ def test_routes_are_never_written_through_a_link(installed, tmp_path):
     (outside / "AppRoutes.lua").write_text("-- another addon's\n")
     addon = folder / "Interface" / "AddOns" / "Pinkas"
     shutil.rmtree(addon)
-    addon.symlink_to(outside, target_is_directory=True)
+    link_folder(addon, outside)
 
     assert app.write_routes(lambda: HERB) == "routes-refused"
     assert (outside / "AppRoutes.lua").read_text() == "-- another addon's\n"
@@ -413,7 +431,7 @@ def test_routes_are_never_written_through_a_link(installed, tmp_path):
     addon.unlink()
     app.install(dict)
     routes_file(folder).unlink()
-    routes_file(folder).symlink_to(outside / "AppRoutes.lua")
+    link_file(routes_file(folder), outside / "AppRoutes.lua")
 
     assert app.write_routes(lambda: HERB) == "routes"
     assert (outside / "AppRoutes.lua").read_text() == "-- another addon's\n"
@@ -652,6 +670,15 @@ def test_a_second_copy_does_not_get_the_lock(tmp_path):
     first.close()
 
     assert desktop.take_lock(tmp_path / "pinkas.lock") is not None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the mutex is the installer's, on Windows")
+def test_the_lock_holds_the_mutex_the_installer_waits_for(tmp_path):
+    import ctypes
+
+    assert desktop.take_lock(tmp_path / "pinkas.lock") is not None
+    # SYNCHRONIZE: enough to see that it exists, as Inno Setup's AppMutex check does.
+    assert ctypes.windll.kernel32.OpenMutexW(0x00100000, False, desktop.APP_MUTEX)
 
 
 def test_the_log_stamps_each_line_and_starts_over_past_its_limit(tmp_path, monkeypatch):
