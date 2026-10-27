@@ -155,7 +155,7 @@ function ns.buildExport()
     exported_at = time(),
     -- tostring(): a nil from the client must not cost the whole export.
     build = tostring(version) .. "." .. tostring(build),
-    routes = PinkasDB.routes,
+    routes = ns.exportRoutes(),
     chars = chars,
   })
 end

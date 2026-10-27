@@ -22,7 +22,7 @@ from pathlib import Path
 import psycopg2
 
 from pinkas import postgres, web
-from pinkas.parse import MAX_BYTES
+from pinkas.parse import MAX_BYTES, ROUTE_KINDS
 from pinkas.pull import Failure, purge, store
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "pinkas"
@@ -115,9 +115,12 @@ def games(roots) -> list[Path]:
 
 def load_settings(path: Path) -> dict:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        settings = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+    # A damaged file reads as empty, so the next save writes a whole one.
+    return settings if isinstance(settings, dict) else {}
 
 
 def saved_files(game: Path) -> list[Path]:
@@ -209,16 +212,35 @@ def is_link(path: Path) -> bool:
     return path.is_symlink() or path.is_junction()
 
 
-def install_addon(game: Path, source: Path) -> str:
-    """Copies the addon into <game>/Interface/AddOns/Pinkas and writes nothing else. Returns "installed"
-    or "updated"; raises Refused or OSError, having changed nothing outside AddOns."""
+def lua_string(text: str) -> str:
+    # The game runs this file: as \ddd, a name from a forged SavedVariables file can't end its string.
+    return '"' + "".join(chr(b) if chr(b).isascii() and chr(b).isalnum() else f"\\{b:03d}" for b in text.encode()) + '"'
+
+
+def app_routes_lua(routes: dict[str, str]) -> bytes:
+    """AppRoutes.lua for the addon: a recipient per route kind, kinds only from the fixed list."""
+    # Without a table the addon goes on with the routes set in the game.
+    if not routes:
+        return b"-- No routes are set in the pinkas app, so /pinkas route sets them.\n"
+
+    lines = "".join(f"  {kind} = {lua_string(routes[kind])},\n" for kind in ROUTE_KINDS if kind in routes)
+
+    return f"-- Written by the pinkas app on every routes save.\nlocal _, ns = ...\nns.appRoutes = {{\n{lines}}}\n".encode()
+
+
+def refuse_links(game: Path, *inside: str) -> None:
+    for step in (game / "Interface", game / "Interface" / "AddOns", *(game / "Interface" / "AddOns" / p for p in inside)):
+        if is_link(step) or (step.exists() and not step.is_dir()):
+            raise Refused
+
+
+def install_addon(game: Path, source: Path, routes: bytes) -> str:
+    """Copies the addon into <game>/Interface/AddOns/Pinkas, with `routes` as its AppRoutes.lua, and writes nothing
+    else. Returns "installed" or "updated"; raises Refused or OSError, having changed nothing outside AddOns."""
     addons = game / "Interface" / "AddOns"
     target = addons / "Pinkas"
     staging, old = addons / "Pinkas.new", addons / "Pinkas.old"
-
-    for step in (game / "Interface", addons, target, staging, old):
-        if is_link(step) or (step.exists() and not step.is_dir()):
-            raise Refused
+    refuse_links(game, "Pinkas", "Pinkas.new", "Pinkas.old")
 
     addons.mkdir(parents=True, exist_ok=True)
 
@@ -229,6 +251,7 @@ def install_addon(game: Path, source: Path) -> str:
     shutil.rmtree(staging, ignore_errors=True)
     shutil.rmtree(old, ignore_errors=True)
     shutil.copytree(source, staging)
+    (staging / "AppRoutes.lua").write_bytes(routes)
     existed = target.exists()
 
     if existed:
@@ -248,6 +271,24 @@ def install_addon(game: Path, source: Path) -> str:
     return "updated" if existed else "installed"
 
 
+def write_app_routes(game: Path, routes: bytes) -> str:
+    """Returns "routes", or "routes-later" when no installed addon's .toc loads the file; raises Refused or OSError."""
+    target = game / "Interface" / "AddOns" / "Pinkas"
+    refuse_links(game, "Pinkas")
+    toc = target / "Pinkas.toc"
+
+    if not toc.is_file() or "AppRoutes.lua" not in toc.read_text(encoding="utf-8", errors="replace").splitlines():
+        return "routes-later"
+
+    # Whole, as the game may load it at any moment; and the replace swaps the folder's entry, so a link at
+    # AppRoutes.lua itself is replaced, never written through.
+    temp = target / "AppRoutes.lua.tmp"
+    temp.write_bytes(routes)
+    temp.replace(target / "AppRoutes.lua")
+
+    return "routes"
+
+
 class App:
     """What the settings pages ask of the Windows app: its game folder, the files it read, the addon, the log.
     Every path here comes from its own settings or the game's folders, never from a request."""
@@ -261,6 +302,9 @@ class App:
         # Each request and the watcher run on their own threads: two saves would share settings.json's temp file, and
         # on Windows a read holding the file open makes the save's replace fail.
         self.settings_lock = threading.Lock()
+        # Held from reading the routes to writing AppRoutes.lua: two saves would share its temp file, and routes read
+        # before another save wrote would undo it.
+        self.addon_lock = threading.Lock()
 
     def saved_game(self) -> str | None:
         with self.settings_lock:
@@ -278,12 +322,23 @@ class App:
         return saved if saved and not is_game(Path(saved)) else None
 
     def save_game(self, folder: Path) -> None:
+        self.save_setting("game", str(folder))
+
+    def save_setting(self, key: str, value) -> None:
         # Whole or not at all: a power cut mid-write would otherwise leave no saved folder.
         temp = self.settings.with_suffix(".tmp")
 
         with self.settings_lock:
-            temp.write_text(json.dumps({"game": str(folder)}), encoding="utf-8")
+            settings = load_settings(self.settings)
+            settings[key] = value
+            temp.write_text(json.dumps(settings), encoding="utf-8")
             temp.replace(self.settings)
+
+    def routes_set_here(self) -> bool:
+        """Whether routes were ever saved in the app: from then on the Routes tab never starts from the game's, which
+        the last export may still hold from the app itself."""
+        with self.settings_lock:
+            return bool(load_settings(self.settings).get("routes_set"))
 
     def candidates(self) -> list[Path]:
         return games(GAME_ROOTS)
@@ -358,7 +413,7 @@ class App:
 
         return {"installed": installed, "newest": toc_version(ADDON_SOURCE / "Pinkas.toc")}
 
-    def install(self) -> str:
+    def install(self, read_routes) -> str:
         """Returns "installed", "updated", "failed" (Windows refused a write), "refused" (a link on the way, which
         pinkas won't write through) or "no-game" (the folder went away since the page was shown)."""
         game = self.game()
@@ -367,7 +422,8 @@ class App:
             return "no-game"
 
         try:
-            outcome = install_addon(game, ADDON_SOURCE)
+            with self.addon_lock:
+                outcome = install_addon(game, ADDON_SOURCE, app_routes_lua(read_routes()))
         except Refused:
             print("addon install refused (a link)")
 
@@ -379,6 +435,36 @@ class App:
             return "failed"
 
         print(f"addon {outcome}")
+
+        return outcome
+
+    def write_routes(self, read_routes) -> str:
+        """The routes `read_routes` returns, into the game. Returns "routes", "routes-later" (no game yet, or no addon
+        that loads AppRoutes.lua), "routes-refused" (a link on the way) or "routes-failed" (Windows refused a write)."""
+        try:
+            self.save_setting("routes_set", True)
+        # The routes are saved; without the mark the Routes tab may only start from the game's again.
+        except OSError as exc:
+            print(f"routes mark not saved ({type(exc).__name__})")
+
+        game = self.game()
+
+        if game is None:
+            return "routes-later"
+
+        try:
+            with self.addon_lock:
+                outcome = write_app_routes(game, app_routes_lua(read_routes()))
+        except Refused:
+            print("routes not written (a link)")
+
+            return "routes-refused"
+        except OSError as exc:
+            print(f"routes not written ({type(exc).__name__})")
+
+            return "routes-failed"
+
+        print(f"routes {outcome}")
 
         return outcome
 

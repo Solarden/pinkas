@@ -1,0 +1,1 @@
+-- The pinkas app for Windows writes its routes here (ns.appRoutes); without it, /pinkas route sets them.

@@ -1019,6 +1019,12 @@ def test_a_full_bank_turns_own_mats_in_the_bags_into_a_warning(logged_in, conn):
     assert "<span>Leather · bank full</span>" in bags
 
 
+def test_a_name_realm_route_shows_the_characters_name(logged_in, conn):
+    store(conn, routed_account())
+
+    assert 'Leather → <a href="/c/Testrealm/Fakechar">Fakechar</a>' in logged_in.get("/c/Testrealm/Altchar").body
+
+
 def test_items_carry_their_quality_colour_and_word(logged_in, conn):
     store(conn, routed_account())
     body = logged_in.get("/c/Testrealm/Fakechar").body
@@ -1058,8 +1064,61 @@ def test_the_mail_plan_adds_up_routed_slots_per_character(logged_in, conn):
 
     assert '<a href="/c/Testrealm/Fakechar">Fakechar</a></span>' in plan
     assert '<a href="/c/Testrealm/Altchar">Altchar</a> 2<span class="sr"> slots</span>' in plan
-    assert '<a href="/c/Testrealm/Fakechar">Fakechar-Testrealm</a> 1' in plan, "Altchar's leather, to a Name-Realm route"
-    assert "<span>cloth → Altchar</span> · <span>leather → Fakechar-Testrealm</span>" in plan
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar</a> 1' in plan, "Altchar's leather, to a Name-Realm route, by name"
+    assert "<span>cloth → Altchar</span> · <span>leather → Fakechar</span>" in plan
+
+
+def test_a_route_to_a_same_named_stranger_on_another_realm_keeps_its_realm(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"ore": "Altchar-OtherRealm"}
+    store(conn, export)
+
+    assert "<span>ore → Altchar-OtherRealm</span>" in logged_in.get("/").body
+
+
+def test_a_same_named_alt_on_another_realm_is_another_character(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar-OtherRealm"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+    here = logged_in.get("/c/Testrealm/Fakechar").body
+    there = logged_in.get("/c/Other%20Realm/Fakechar").body
+
+    assert 'Leather → <a href="/c/Other%20Realm/Fakechar">Fakechar</a>' in here
+    assert "Leather → bank" in there and "Leather →" not in there.replace("Leather → bank", "")
+
+
+def test_a_route_without_a_realm_links_this_realms_character_first(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+
+    assert 'Leather → <a href="/c/Testrealm/Fakechar">Fakechar</a>' in logged_in.get("/c/Testrealm/Altchar").body
+
+
+def test_the_mail_plan_takes_a_route_without_a_realm_to_the_senders_realm(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Fakechar"}
+    export["chars"]["Other Realm/Fakechar"] = {**copy.deepcopy(export["chars"][KEY]), "realm": "Other Realm"}
+    store(conn, export)
+
+    # Listed first, so a plain first match would take it.
+    with conn, conn.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET sort = 1 WHERE realm = 'Other Realm'")
+
+    plan = logged_in.get("/").body.split("Mail plan · slots to send")[1].split("</section>")[0]
+
+    assert '<a href="/c/Testrealm/Fakechar">Fakechar</a> 1' in plan and "Other%20Realm/Fakechar\">Fakechar</a> " not in plan
+
+
+def test_a_route_to_a_stranger_named_like_an_alt_links_nobody(logged_in, conn):
+    export = routed_account()
+    export["routes"] = {"leather": "Altchar-OtherRealm"}
+    store(conn, export)
+    plan = logged_in.get("/").body.split("Mail plan · slots to send")[1].split("</section>")[0]
+
+    assert "Altchar-OtherRealm 2" in plan and '">Altchar</a> ' not in plan
 
 
 def test_without_routes_there_is_no_mail_plan(logged_in, conn):

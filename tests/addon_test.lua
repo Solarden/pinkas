@@ -137,6 +137,7 @@ local function newWorld()
     timers = {},
     hooks = {},
     played = nil,
+    printed = {},
   }
 end
 
@@ -148,7 +149,9 @@ local function makeEnv()
   e.time = function()
     return world.now
   end
-  e.print = function() end
+  e.print = function(text)
+    world.printed[#world.printed + 1] = text
+  end
   e.CreateFrame = function()
     local f = { events = {} }
     function f:RegisterEvent(...)
@@ -393,7 +396,8 @@ end
 
 local ns
 
-local function load(savedDB)
+-- `appRoutes`: a file to load in place of the shipped AppRoutes.lua, as the Windows app writes it.
+local function load(savedDB, appRoutes)
   -- A /reload replaces the whole UI: the previous addon's frames, hooks and timers are gone.
   world.frames, world.hooks, world.timers = {}, {}, {}
   env = makeEnv()
@@ -410,7 +414,8 @@ local function load(savedDB)
   ns = {}
   local toc = assert(io.open(ADDON .. "Pinkas.toc")):read("a")
   for file in toc:gmatch("([%w_]+%.lua)") do
-    local chunk = assert(loadfile(ADDON .. file, "t", env))
+    local path = file == "AppRoutes.lua" and appRoutes or ADDON .. file
+    local chunk = assert(loadfile(path, "t", env))
     chunk("Pinkas", ns)
   end
   fire("ADDON_LOADED", "Pinkas")
@@ -542,6 +547,73 @@ test("no route ships with a recipient, and a route without one is skipped", func
   env.SlashCmdList.PINKAS("route leather testchar")
   ns.fillNextMail()
   assert(world.mailTo == nil and next(world.sendItems) == nil, "a route to this character, in any case, is skipped")
+end)
+
+-- tests/fixtures/fake_app_routes.lua is the app's writer run on these names (test_desktop.py).
+local HOSTILE = {
+  herb = '"]] os.exit() --',
+  cloth = 'Line\nbreak "quoted" \\',
+  leather = "Altname-Testrealm",
+  ore = "Zo\195\171-OtherRealm",
+}
+
+test("the app's routes file holds hostile names as plain strings, and replaces /pinkas route", function()
+  newWorld()
+  world.bags = { [0] = {}, [5] = { { itemID = 2318, stackCount = 3 } } }
+  load({ routes = { leather = "Stranger", enchanting = "Stranger" } }, "tests/fixtures/fake_app_routes.lua")
+  login(true)
+  for kind, name in pairs(HOSTILE) do
+    assert(ns.appRoutes[kind] == name, kind .. " parsed back to another string")
+  end
+  ns.fillNextMail()
+  assert(world.mailTo == "Altname" and world.sendItems[1].itemID == 2318, "this realm's alt by its name alone")
+  assert(world.printed[#world.printed]:find("for Altname - check", 1, true), "and the chat line names it so too")
+  local function said(text)
+    for _, line in ipairs(world.printed) do
+      if line:find(text, 1, true) then
+        return true
+      end
+    end
+
+    return false
+  end
+  env.SlashCmdList.PINKAS("routes")
+  assert(said("leather -> Altname") and not said("Altname-Testrealm"), "/pinkas routes, as the mail has it")
+  world.printed = {}
+  env.SlashCmdList.PINKAS("")
+  assert(said("set in the pinkas app") and not said("<Name>"), "the help points to the app")
+  env.SlashCmdList.PINKAS("route leather Other")
+  assert(env.PinkasDB.routes.leather == "Stranger", "/pinkas route says to use the app")
+  local routes = logoutAndExport().routes
+  assert(routes.leather == "Altname-Testrealm" and routes.enchanting == nil, "the export carries the app's routes")
+end)
+
+test("a route the app leaves off stays off, whatever /pinkas route set", function()
+  newWorld()
+  world.bags = { [0] = { { itemID = 2589, stackCount = 20 } } }
+  local file = os.tmpname()
+  local f = assert(io.open(file, "w"))
+  f:write('local _, ns = ...\nns.appRoutes = {\n  herb = "Herbchar\\045Testrealm",\n}\n')
+  f:close()
+  load({ routes = { cloth = "Altname" } }, file)
+  os.remove(file)
+  login(true)
+  ns.fillNextMail()
+  assert(world.mailTo == nil and next(world.sendItems) == nil)
+end)
+
+test("a route that isn't a name is skipped, not an error", function()
+  newWorld()
+  world.bags = { [0] = { { itemID = 2447, stackCount = 5 }, { itemID = 2589, stackCount = 20 } } }
+  load({ routes = { herb = 5, cloth = "Altname" } })
+  login(true)
+  ns.fillNextMail()
+  assert(world.mailTo == "Altname" and world.sendItems[1].itemID == 2589, "the next route instead")
+  env.SlashCmdList.PINKAS("routes")
+  assert(world.printed[#world.printed - 4]:find("herb -> (off)", 1, true))
+  env.PinkasDB.routes.gems = "Altname"
+  local routes = logoutAndExport().routes
+  assert(routes.cloth == "Altname" and routes.herb == nil and routes.gems == nil, "the export carries names only")
 end)
 
 -- Mail -------------------------------------------------------------------------------------------

@@ -22,6 +22,7 @@ def test_settings_open_on_routes_and_the_game_tab_is_the_apps_only(logged_in):
     assert logged_in.get("/settings/game").status == 404
     assert logged_in.post("/settings/game", {"t": TOKEN, "game": "0"}).status == 404
     assert logged_in.post("/settings/addon", {"t": TOKEN}).status == 404
+    assert logged_in.post("/settings/routes", {"t": TOKEN, "route-herb": ""}).status == 404
     assert "/settings/game" not in logged_in.get("/settings/routes").body
 
 

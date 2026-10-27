@@ -13,7 +13,7 @@
 {% if plan or routes %}
 <section class="panel mail">
 <h2>Mail plan · slots to send</h2>
-{% if plan %}<ul class="plain plan">{% for line in plan %}<li><span class="n"><a href="/c/{{ line.character.realm|pathpart }}/{{ line.character.name|pathpart }}">{{ line.character.name }}</a>{% if line.character.playing %} <span class="muted">· playing</span>{% endif %}</span><span class="muted"><span aria-hidden="true">→ </span><span class="sr">mail </span>{% for to, who, n in line.sends %}{% if who %}<a href="/c/{{ who.realm|pathpart }}/{{ who.name|pathpart }}">{{ to }}</a>{% else %}{{ to }}{% endif %} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}<span class="sr"> slots</span></span></li>{% endfor %}</ul>
+{% if plan %}<ul class="plain plan">{% for line in plan %}<li><span class="n"><a href="/c/{{ line.character.realm|pathpart }}/{{ line.character.name|pathpart }}">{{ line.character.name }}</a>{% if line.character.playing %} <span class="muted">· playing</span>{% endif %}</span><span class="muted"><span aria-hidden="true">→ </span><span class="sr">mail </span>{% for to, who, n in line.sends %}{% if who %}<a href="/c/{{ who.realm|pathpart }}/{{ who.name|pathpart }}">{{ who.name }}</a>{% else %}{{ to }}{% endif %} {{ n }}{% if not loop.last %} · {% endif %}{% endfor %}<span class="sr"> slots</span></span></li>{% endfor %}</ul>
 {% else %}<p class="muted note">Nothing to mail: no routed materials in bags or banks.</p>{% endif %}
 <span class="label">Routes</span>
 {% if routes %}<p class="muted routes note">{% for kind, to in routes %}<span>{{ kind }} → {{ to }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</p>

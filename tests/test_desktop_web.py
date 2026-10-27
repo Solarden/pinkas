@@ -1,5 +1,6 @@
 """The Windows app's pages: a one-time launch token instead of a password, and only its own Host."""
 
+import copy
 import http.client
 import re
 import threading
@@ -9,11 +10,12 @@ import psycopg2
 import pytest
 
 from pinkas import web
-from pinkas.desktop import App
+from pinkas.desktop import App, app_routes_lua
 from pinkas.ingest import ingest
+from pinkas.parse import ROUTE_KINDS
 from tests.db import DSN
-from tests.files import fixture
-from tests.web_client import Client
+from tests.files import KEY, account, fixture, with_export
+from tests.web_client import XSS, XSS_ESCAPED, Client
 
 
 @pytest.fixture
@@ -127,7 +129,7 @@ def test_the_first_run_lists_its_steps_and_reloads_until_a_character_is_read(ope
     assert "Found 2 game versions." in body and body.count('type="radio" name="game"') == 2
 
     opened.server.app.use(0)
-    opened.server.app.install()
+    opened.server.app.install(dict)
     body = opened.get("/settings/game?done=installed").body
 
     assert '<meta http-equiv="refresh" content="5; url=/settings/game">' in body
@@ -169,7 +171,7 @@ def test_the_addon_install_says_which_version_to_load(opened):
     body = opened.get(response.headers["Location"]).body
 
     assert response.headers["Location"] == "/settings/game?done=installed"
-    assert "Addon 0.1.0 installed. Restart the game to load it." in body
+    assert "Addon 0.2.0 installed. Restart the game to load it." in body
     assert re.search(r'<span class="pill pos">up to date</span>', body)
     assert (opened.root / "_classic_" / "Interface" / "AddOns" / "Pinkas" / "Pinkas.toc").is_file()
 
@@ -242,3 +244,150 @@ def test_a_link_in_the_way_says_to_remove_it(opened, tmp_path):
 
     assert response.headers["Location"] == "/settings/game?done=refused"
     assert "is a link" in body and "Close the game" not in body
+
+
+def ingest_characters(conn, routes: dict, more: dict | None = None) -> dict[str, int]:
+    """Fakechar, Herbchar with Alchemy, a hostile name, Farmer on a realm with a space, and any `more`; ids by name."""
+    export = account()
+    export["routes"] = routes
+    fake = export["chars"][KEY]
+    herb = {**copy.deepcopy(fake), "name": "Herbchar", "professions": [{**fake["professions"][0], "name": "Alchemy",
+                                                                         "skill_line": 171, "rank": 230}]}
+    farmer = {**copy.deepcopy(fake), "name": "Farmer", "realm": "Other Realm"}
+    export["chars"].update({"Testrealm/Herbchar": herb, f"Testrealm/{XSS}": {**copy.deepcopy(fake), "name": XSS},
+                            "Other Realm/Farmer": farmer})
+    export["chars"].update({key: {**copy.deepcopy(fake), **char} for key, char in (more or {}).items()})
+    ingest(conn, with_export(export), datetime.now(UTC))
+
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT name, id FROM pinkas_characters")
+
+        return dict(cur.fetchall())
+
+
+@pytest.fixture
+def characters(conn):
+    return ingest_characters(conn, {})
+
+
+def routes_form(token, **picks):
+    return {"t": token, **{f"route-{kind}": str(picks.get(kind, "")) for kind in ROUTE_KINDS}}
+
+
+def test_the_routes_tab_offers_each_realms_characters_with_the_crafter_as_a_hint(opened, characters):
+    body = opened.get("/settings/routes").body
+
+    assert body.count('<select id="route-') == 5 and '<optgroup label="Other Realm">' in body
+    assert XSS not in body and XSS_ESCAPED in body
+    assert '<p class="hint" id="hint-herb">Alchemy: Herbchar 230</p>' in body
+    assert '<p class="hint" id="hint-enchanting">Enchanting: nobody has it yet</p>' in body
+
+
+def test_saved_routes_reach_the_installed_addon_and_the_page(opened, characters):
+    opened.server.app.use(0)
+    opened.server.app.install(dict)
+    written = opened.root / "_classic_" / "Interface" / "AddOns" / "Pinkas" / "AppRoutes.lua"
+    response = opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"],
+                                                           ore=characters["Farmer"]))
+    body = opened.get(response.headers["Location"]).body
+
+    assert response.headers["Location"] == "/settings/routes?done=routes"
+    assert "Routes saved. Type /reload in the game to use them." in body
+    assert written.read_bytes() == app_routes_lua({"herb": "Herbchar-Testrealm", "ore": "Farmer-OtherRealm"})
+    assert f'<option value="{characters["Herbchar"]}" selected>Herbchar</option>' in body
+
+    opened.post("/settings/routes", routes_form(opened.token, ore=characters["Farmer"]))
+
+    assert written.read_bytes() == app_routes_lua({"ore": "Farmer-OtherRealm"})
+
+
+def test_routes_saved_before_the_addon_say_where_they_go(opened, characters):
+    response = opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"]))
+
+    assert response.headers["Location"] == "/settings/routes?done=routes-later"
+    assert "install or update it on the Game tab" in opened.get(response.headers["Location"]).body
+
+
+def test_a_link_in_the_way_of_the_routes_says_to_remove_it(opened, characters, tmp_path):
+    opened.server.app.use(0)
+    addons = opened.root / "_classic_" / "Interface" / "AddOns"
+    addons.mkdir()
+    (tmp_path / "store").mkdir()
+    (addons / "Pinkas").symlink_to(tmp_path / "store", target_is_directory=True)
+    response = opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"]))
+    body = opened.get(response.headers["Location"]).body
+
+    assert response.headers["Location"] == "/settings/routes?done=routes-refused"
+    assert "is a link" in body and "Close the game" not in body
+
+
+def test_until_routes_are_set_here_the_form_starts_from_the_games(opened, conn):
+    # A stranger matches nobody, Farmer alone two characters, and a realm typed in lower case still counts.
+    characters = ingest_characters(
+        conn, {"herb": "herbchar", "cloth": "Stranger", "leather": "Farmer", "ore": "farmer-otherrealm"},
+        {"Testrealm/Farmer": {"name": "Farmer", "realm": "Testrealm"}},
+    )
+
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM pinkas_characters WHERE name = 'Farmer' AND realm = 'Other Realm'")
+        (other_farmer,) = cur.fetchone()
+
+    body = opened.get("/settings/routes").body
+
+    assert "These are the routes set in the game." in body
+    assert f'<option value="{characters["Herbchar"]}" selected>Herbchar</option>' in body
+    assert f'<option value="{other_farmer}" selected>Farmer</option>' in body
+    assert body.count(" selected>") == 2
+
+    opened.post("/settings/routes", routes_form(opened.token, cloth=characters["Fakechar"]))
+    body = opened.get("/settings/routes").body
+
+    assert "These are the routes set in the game." not in body and body.count(" selected>") == 1
+
+
+def test_routes_cleared_in_the_app_stay_cleared_while_the_game_still_has_them(opened, conn):
+    # The last export, read before the game reloaded, still carries the app's own route.
+    characters = ingest_characters(conn, {"herb": "Herbchar-Testrealm"})
+    opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"]))
+    opened.post("/settings/routes", routes_form(opened.token))
+    body = opened.get("/settings/routes").body
+
+    assert " selected>" not in body and "These are the routes set in the game." not in body
+
+
+@pytest.mark.parametrize("form", [
+    {"route-herb": "999999"}, {"route-herb": "x"}, {"route-herb": "1e0"}, {"route-herb": "²"}, {"route-gems": ""}, {"route-herb": None},
+])
+def test_a_routes_save_with_an_unknown_kind_or_character_writes_nothing(opened, characters, conn, form):
+    sent = {k: v for k, v in {**routes_form(opened.token, cloth=characters["Fakechar"]), **form}.items() if v is not None}
+
+    assert opened.post("/settings/routes", sent).status == 400
+
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pinkas_routes")
+
+        assert cur.fetchone()[0] == 0
+
+
+def test_a_character_whose_name_and_realm_outgrow_a_route_is_not_offered(opened, conn):
+    long_name, long_realm = "N" * 200, "R" * 200
+    ingest_characters(conn, {}, {f"{long_realm}/{long_name}": {"name": long_name, "realm": long_realm}})
+
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM pinkas_characters WHERE name = %s", (long_name,))
+        (long_id,) = cur.fetchone()
+
+    assert long_name not in opened.get("/settings/routes").body
+    assert opened.post("/settings/routes", routes_form(opened.token, herb=long_id)).status == 400
+
+
+def test_an_archived_character_is_offered_only_while_a_route_names_it(opened, characters, conn):
+    opened.post("/settings/routes", routes_form(opened.token, herb=characters["Herbchar"]))
+
+    with conn, conn.cursor() as cur:
+        cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name IN ('Herbchar', 'Farmer')")
+
+    body = opened.get("/settings/routes").body
+
+    assert ">Herbchar</option>" in body and ">Farmer</option>" not in body
+    assert opened.post("/settings/routes", routes_form(opened.token, ore=characters["Farmer"])).status == 400

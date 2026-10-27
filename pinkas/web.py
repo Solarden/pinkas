@@ -42,7 +42,7 @@ from psycopg2.extras import execute_values
 from pinkas import rested, stats
 from pinkas.db import NEWEST, fetch
 from pinkas.ingest import ts
-from pinkas.parse import KIND_LABELS, KIND_OF, ROUTE_KINDS, ParseError
+from pinkas.parse import KIND_LABELS, KIND_OF, ROUTE_KINDS, TEXT_LIMIT, ParseError
 
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=True)
@@ -109,7 +109,19 @@ DONE = {
                 "Not installed: the addon's folder in the game is a link, perhaps made by an addon manager, and pinkas"
                 " won't write through it. Remove the link, then install again."),
     "guide": ("/guide", "ok", "Guide saved."),
+    "routes": ("/settings/routes", "ok", "Routes saved. Type /reload in the game to use them."),
+    "routes-later": ("/settings/routes", "ok",
+                     "Routes saved. They reach the game with the addon: install or update it on the Game tab."),
+    "routes-refused": ("/settings/routes", "error",
+                       "Routes saved, but not written into the game: the addon's folder is a link, and pinkas won't"
+                       " write through it. Remove the link, then install the addon on the Game tab."),
+    "routes-failed": ("/settings/routes", "error",
+                      "Routes saved, but Windows didn't let pinkas write them into the game's addon. Close the game,"
+                      " then save again."),
 }
+# The profession that crafts with each route kind's materials, shown as a hint beside its recipient.
+CRAFTS = {"herb": (171, "Alchemy"), "cloth": (197, "Tailoring"), "leather": (165, "Leatherworking"),
+          "ore": (164, "Blacksmithing"), "enchanting": (333, "Enchanting")}
 
 
 class Config(NamedTuple):
@@ -477,19 +489,11 @@ def summed(items: list[dict]) -> list[dict]:
     return [lines[key] for key in sorted(lines)]
 
 
-def own_name(recipient: str) -> str:
-    """The character name in a route's recipient, which may be typed as Name-Realm.
-
-    shortcut: ignores the realm; enough while every alt shares one realm.
-    """
-    return recipient.split("-", 1)[0].casefold()
-
-
 def item_kind(item: dict) -> str | None:
     return KIND_OF.get((item.get("class"), item.get("subclass")))
 
 
-def grouped(items: list[dict], routes: dict, character: str, in_bank: bool, bank_full: bool) -> list[dict]:
+def grouped(items: list[dict], routes: dict, character: dict, in_bank: bool, bank_full: bool) -> list[dict]:
     """Items as the mail plan sees them: routed materials going to another character, materials whose
     route is this character (kept in the bank), junk for a vendor, and the rest. `slots` counts stacks."""
     groups: dict[tuple, dict] = {}
@@ -498,7 +502,7 @@ def grouped(items: list[dict], routes: dict, character: str, in_bank: bool, bank
         kind = item_kind(item)
         recipient = routes.get(kind) if kind else None
 
-        if recipient and own_name(recipient) != character.casefold():
+        if recipient and not is_recipient(character, recipient):
             key, label, to = (0, ROUTE_KINDS.index(kind)), f"{KIND_LABELS[kind]} →", recipient
         elif recipient:
             where = "own mats" if in_bank else "bank full" if bank_full else None
@@ -534,7 +538,6 @@ def slots(items: list[dict], total: int | None) -> dict:
 def mail_plan(characters: list[dict], routes: dict) -> list[dict]:
     """Per character, the slots of routed materials (bags and bank) to mail to each other character,
     each recipient with its listed character when it is one, for the link."""
-    listed = {c["name"].casefold(): c for c in characters}
     plan = []
 
     for c in characters:
@@ -542,13 +545,15 @@ def mail_plan(characters: list[dict], routes: dict) -> list[dict]:
         items = data["bags"] + (data["bank"]["items"] if data["bank"] else [])
         sends: dict[str, int] = {}
 
-        for group in grouped(items, routes, c["name"], in_bank=False, bank_full=False):
+        for group in grouped(items, routes, c, in_bank=False, bank_full=False):
             if group["to"]:
                 sends[group["to"]] = sends.get(group["to"], 0) + group["slots"]
 
         if sends:
             ordered = sorted(sends.items(), key=lambda s: -s[1])
-            plan.append({"character": c, "sends": [(to, listed.get(own_name(to)), n) for to, n in ordered]})
+            # A recipient typed without a realm is on the sender's, as the game reads it.
+            near = sorted(characters, key=lambda other: other["realm"] != c["realm"])
+            plan.append({"character": c, "sends": [(to, recipient_of(near, to), n) for to, n in ordered]})
 
     return plan
 
@@ -687,6 +692,79 @@ def save_settings(conn, form: dict[str, list[str]]) -> bool:
         )
 
     return True
+
+
+def route_choices(cur) -> list[dict]:
+    """The characters a route can go to: every one not archived, and any archived one a route still names."""
+    rows = fetch(
+        cur,
+        f"SELECT c.id, c.realm, c.name, s.data->'professions' AS professions FROM pinkas_characters c {NEWEST}"
+        " WHERE c.archived_at IS NULL OR c.id IN (SELECT character_id FROM pinkas_routes) ORDER BY c.realm, c.name",
+    )
+
+    # The export carries the route back as Name-Realm, and the pull refuses a longer one: only a forged name gets here.
+    return [c for c in rows if len(c["name"]) + 1 + len(plain_realm(c["realm"])) <= TEXT_LIMIT]
+
+
+def plain_realm(realm: str) -> str:
+    """A realm as the game writes it after a name: without its spaces."""
+    return re.sub(r"\s", "", realm)
+
+
+def is_recipient(character: dict, to: str) -> bool:
+    """Whether a route's recipient, "Name" or "Name-Realm" in any case, is this character."""
+    name, _, realm = to.partition("-")
+
+    return character["name"].casefold() == name.casefold() and (
+        not realm or plain_realm(character["realm"]).casefold() == plain_realm(realm).casefold())
+
+
+def recipient_of(characters: list[dict], to: str) -> dict | None:
+    """The character a route's recipient names, the first one when it gives no realm and several share the name."""
+    return next((c for c in characters if is_recipient(c, to)), None)
+
+
+def route_recipients(cur) -> dict[str, str]:
+    """Each route's recipient as the addon takes it: Name-Realm."""
+    cur.execute("SELECT r.kind, c.name, c.realm FROM pinkas_routes r JOIN pinkas_characters c ON c.id = r.character_id")
+
+    return {kind: name + "-" + plain_realm(realm) for kind, name, realm in cur.fetchall()}
+
+
+def store_routes(conn, form: dict[str, list[str]]) -> bool:
+    """Every kind's field is checked before anything is written; False means nothing was."""
+    if any(key.startswith("route-") and key.removeprefix("route-") not in ROUTE_KINDS for key in form):
+        return False
+
+    picks = {kind: form.get(f"route-{kind}", [None])[0] for kind in ROUTE_KINDS}
+
+    if not all(pick == "" or (pick and pick.isascii() and pick.isdigit()) for pick in picks.values()):
+        return False
+
+    with conn, conn.cursor() as cur:
+        if not {int(p) for p in picks.values() if p} <= {c["id"] for c in route_choices(cur)}:
+            return False
+
+        cur.execute("DELETE FROM pinkas_routes WHERE kind = ANY(%s)", ([k for k, p in picks.items() if not p],))
+
+        for kind, pick in picks.items():
+            if pick:
+                cur.execute(
+                    "INSERT INTO pinkas_routes (kind, character_id) VALUES (%s, %s)"
+                    " ON CONFLICT (kind) DO UPDATE SET character_id = EXCLUDED.character_id",
+                    (kind, int(pick)),
+                )
+
+    return True
+
+
+def read_recipients(conn):
+    """The routes' reader for the Windows app, which calls it while it holds the addon's lock."""
+    def read() -> dict[str, str]:
+        with conn, conn.cursor() as cur:
+            return route_recipients(cur)
+
+    return read
 
 
 def set_playing(conn, character_id: int | None) -> bool:
@@ -926,8 +1004,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for c in characters:
                 c["slots"] = slots(c["data"]["bags"], c["data"].get("bag_slots"))
 
+            # A recipient that is a listed character by its name, as the mail plan shows it.
             return self.page(conn, 200, "index.html", ctx, cookie, nerd, characters=characters, playing=playing,
-                             routes=[(kind, routes[kind]) for kind in ROUTE_KINDS if routes.get(kind)],
+                             routes=[(kind, (recipient_of(characters, routes[kind]) or {"name": routes[kind]})["name"])
+                                     for kind in ROUTE_KINDS if routes.get(kind)],
                              plan=mail_plan(characters, routes),
                              account=account_summary(characters),
                              next_up=next_up(characters), cards=card_keys(characters))
@@ -991,6 +1071,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              addon=addon, candidates=[] if game else app.candidates(), setup=setup,
                              missing=app.missing())
 
+        if path == "/settings/routes" and self.server.conf.desktop_host:
+            with conn, conn.cursor() as cur:
+                choices = route_choices(cur)
+                cur.execute("SELECT kind, character_id FROM pinkas_routes")
+                picked = dict(cur.fetchall())
+                nerd = nerd_stats(cur)
+
+            # None ever set here: the game's routes apply, so the form starts from them where a route names one character.
+            from_game = not picked and not self.server.app.routes_set_here()
+
+            if from_game:
+                for kind, to in nerd["export"].get("routes", {}).items():
+                    matches = [c["id"] for c in choices if to and is_recipient(c, to)]
+
+                    if len(matches) == 1:
+                        picked[kind] = matches[0]
+
+            routes = []
+
+            for kind in ROUTE_KINDS:
+                line, craft = CRAFTS[kind]
+                ranks = sorted(((p["rank"], c["name"]) for c in choices for p in c["professions"]
+                                if p["skill_line"] == line and p["rank"]), reverse=True)
+                hint = ", ".join(f"{name} {rank}" for rank, name in ranks) or "nobody has it yet"
+                routes.append({"kind": kind, "label": KIND_LABELS[kind], "picked": picked.get(kind), "hint": f"{craft}: {hint}"})
+
+            realms = {}
+
+            for c in choices:
+                realms.setdefault(c["realm"], []).append(c)
+
+            return self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes", routes=routes,
+                             realms=realms, from_game=from_game and bool(picked))
+
         if path == "/settings/routes":
             with conn, conn.cursor() as cur:
                 nerd = nerd_stats(cur)
@@ -1022,8 +1136,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              if rows and cid == rows[0]["id"] and line not in learned}
                 # Every character's newest snapshot is read only when a name is needed.
                 known = professions(cur) if unlearned else {}
-                cur.execute("SELECT name FROM pinkas_characters WHERE realm = %s", (realm,))
-                alts = {name.casefold(): name for (name,) in cur.fetchall()}
+                # This realm's first, for a recipient typed without one.
+                alts = fetch(cur, "SELECT name, realm FROM pinkas_characters ORDER BY realm <> %(realm)s",
+                             {"realm": realm})
                 history = stats.history(cur, rows[0]["id"], now) if rows else None
 
             if rows:
@@ -1038,12 +1153,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 bank = data["bank"]
                 bank_slots = slots(bank["items"], bank.get("slots")) if bank else None
                 bank_full = bool(bank_slots and bank_slots["total"] and bank_slots["used"] >= bank_slots["total"])
-                bag_groups = grouped(data["bags"], routes, row["name"], in_bank=False, bank_full=bank_full)
-                bank_groups = grouped(bank["items"], routes, row["name"], in_bank=True, bank_full=False) if bank else None
+                bag_groups = grouped(data["bags"], routes, row, in_bank=False, bank_full=bank_full)
+                bank_groups = grouped(bank["items"], routes, row, in_bank=True, bank_full=False) if bank else None
 
-                # A recipient that is a character of this realm gets a link to its page.
+                # A recipient that is one of the characters gets a link to its page.
                 for group in bag_groups + (bank_groups or []):
-                    group["who"] = alts.get(own_name(group["to"])) if group["to"] else None
+                    group["who"] = recipient_of(alts, group["to"]) if group["to"] else None
 
                 return self.page(
                     conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(conn, down=1),
@@ -1112,8 +1227,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             return self.page(conn, 400, "error.html", ctx, cookie, message="Unknown game folder.")
 
+        if path == "/settings/routes" and self.server.conf.desktop_host:
+            if not store_routes(conn, form):
+                return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: reload the page and try again.")
+
+            return self.redirect(f"/settings/routes?done={self.server.app.write_routes(read_recipients(conn))}", cookie)
+
         if path == "/settings/addon" and self.server.conf.desktop_host:
-            outcome = self.server.app.install()
+            outcome = self.server.app.install(read_recipients(conn))
 
             # A folder gone since the page was shown: the page now says it is missing.
             return self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), cookie)

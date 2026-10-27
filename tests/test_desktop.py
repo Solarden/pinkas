@@ -269,21 +269,21 @@ def test_the_addon_is_copied_into_its_own_folder_and_nowhere_else(installed):
     (folder / "Interface" / "AddOns" / "Other" / "Other.toc").write_text("## Title: Other\n")
     before = files_under(folder)
 
-    assert app.addon() == {"installed": None, "newest": "0.1.0"}
-    assert app.install() == "installed"
+    assert app.addon() == {"installed": None, "newest": "0.2.0"}
+    assert app.install(dict) == "installed"
 
     added = sorted(set(files_under(folder)) - set(before))
     shipped = files_under(desktop.ADDON_SOURCE.parent)
 
     assert added == [f"Interface/AddOns/{p}" for p in shipped]
-    assert app.addon()["installed"] == "0.1.0"
-    assert app.install() == "updated"
+    assert app.addon()["installed"] == "0.2.0"
+    assert app.install(dict) == "updated"
     assert files_under(folder) == sorted(set(before) | set(added))
 
 
 def test_a_failed_swap_puts_the_old_addon_back(installed, monkeypatch):
     folder, app = installed
-    app.install()
+    app.install(dict)
     toc = folder / "Interface" / "AddOns" / "Pinkas" / "Pinkas.toc"
     toc.write_text("## Version: 0.0.9\n")
     rename = Path.rename
@@ -296,7 +296,7 @@ def test_a_failed_swap_puts_the_old_addon_back(installed, monkeypatch):
 
     monkeypatch.setattr(Path, "rename", refuse_the_new_copy)
 
-    assert app.install() == "failed"
+    assert app.install(dict) == "failed"
     assert toc.read_text() == "## Version: 0.0.9\n"
 
 
@@ -310,12 +310,134 @@ def test_a_link_on_the_way_to_the_addon_is_refused(installed, tmp_path, link):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.symlink_to(outside, target_is_directory=True)
 
-    assert app.install() == "refused"
+    assert app.install(dict) == "refused"
     assert list(outside.iterdir()) == []
 
 
 def test_an_install_without_a_game_folder_says_so(tmp_path):
-    assert desktop.App(tmp_path).install() == "no-game"
+    assert desktop.App(tmp_path).install(dict) == "no-game"
+
+
+HOSTILE = {"herb": '"]] os.exit() --', "cloth": 'Line\nbreak "quoted" \\', "leather": "Altname-Testrealm",
+           "ore": "Zoë-OtherRealm", "nope": "x"}
+
+
+def test_the_routes_file_escapes_every_name_as_the_addons_test_loads_it():
+    assert desktop.app_routes_lua(HOSTILE) == fixture("fake_app_routes.lua")
+
+
+def routes_file(folder):
+    return folder / "Interface" / "AddOns" / "Pinkas" / "AppRoutes.lua"
+
+
+HERB = {"herb": "Herbchar-Testrealm"}
+
+
+def test_a_settings_file_that_is_no_object_is_written_whole_again(tmp_path):
+    (tmp_path / "settings.json").write_text("[]")
+    app = desktop.App(tmp_path)
+
+    assert app.saved_game() is None
+
+    app.save_game(tmp_path)
+
+    assert app.saved_game() == str(tmp_path)
+
+
+def test_routes_reach_the_game_when_the_mark_cant_be_saved(installed, monkeypatch):
+    folder, app = installed
+    app.install(dict)
+    monkeypatch.setattr(app, "save_setting", lambda *a: (_ for _ in ()).throw(PermissionError("in use")))
+
+    assert app.write_routes(lambda: HERB) == "routes"
+    assert routes_file(folder).read_bytes() == desktop.app_routes_lua(HERB)
+
+
+def test_the_game_folder_and_the_routes_mark_keep_each_other(installed, tmp_path):
+    folder, app = installed
+    app.write_routes(dict)
+    app.save_game(folder)
+
+    assert app.routes_set_here() and app.game() == folder
+    assert desktop.App(tmp_path).routes_set_here(), "kept for the next start"
+
+
+def test_the_install_carries_the_saved_routes_and_a_save_replaces_them(installed):
+    folder, app = installed
+    app.install(lambda: HERB)
+
+    assert routes_file(folder).read_bytes() == desktop.app_routes_lua(HERB)
+    assert app.write_routes(lambda: {"cloth": "Altname-Testrealm"}) == "routes"
+    assert routes_file(folder).read_bytes() == desktop.app_routes_lua({"cloth": "Altname-Testrealm"})
+    assert "AppRoutes.lua.tmp" not in files_under(folder)
+
+
+def test_without_routes_set_in_the_app_the_games_own_apply(installed):
+    folder, app = installed
+    app.install(dict)
+
+    assert b"appRoutes =" not in routes_file(folder).read_bytes()
+
+
+@pytest.mark.parametrize("toc", [None, "## Version: 0.1.0\nCore.lua\nRoutes.lua\n"])
+def test_routes_without_an_addon_that_loads_them_wait_for_its_install(installed, tmp_path, toc):
+    folder, app = installed
+
+    if toc:
+        (folder / "Interface" / "AddOns" / "Pinkas").mkdir()
+        (folder / "Interface" / "AddOns" / "Pinkas" / "Pinkas.toc").write_text(toc)
+
+    before = files_under(folder)
+
+    assert app.write_routes(lambda: HERB) == "routes-later"
+    assert files_under(folder) == before
+    (tmp_path / "other").mkdir()
+
+    assert desktop.App(tmp_path / "other").write_routes(dict) == "routes-later"
+
+
+def test_routes_are_never_written_through_a_link(installed, tmp_path):
+    folder, app = installed
+    app.install(dict)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "Pinkas.toc").write_text("AppRoutes.lua\n")
+    (outside / "AppRoutes.lua").write_text("-- another addon's\n")
+    addon = folder / "Interface" / "AddOns" / "Pinkas"
+    shutil.rmtree(addon)
+    addon.symlink_to(outside, target_is_directory=True)
+
+    assert app.write_routes(lambda: HERB) == "routes-refused"
+    assert (outside / "AppRoutes.lua").read_text() == "-- another addon's\n"
+
+    addon.unlink()
+    app.install(dict)
+    routes_file(folder).unlink()
+    routes_file(folder).symlink_to(outside / "AppRoutes.lua")
+
+    assert app.write_routes(lambda: HERB) == "routes"
+    assert (outside / "AppRoutes.lua").read_text() == "-- another addon's\n"
+
+
+def test_a_routes_file_windows_wont_replace_says_so(installed, monkeypatch):
+    folder, app = installed
+    app.install(dict)
+    monkeypatch.setattr(Path, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("in use")))
+
+    assert app.write_routes(lambda: HERB) == "routes-failed"
+    assert routes_file(folder).read_bytes() == desktop.app_routes_lua({})
+
+
+def test_the_routes_are_read_while_the_addon_is_locked(installed):
+    folder, app = installed
+
+    def read():
+        assert app.addon_lock.locked()
+
+        return HERB
+
+    assert app.install(read) == "installed"
+    assert app.write_routes(read) == "routes"
 
 
 @pytest.mark.parametrize(("flavors", "outcome"), [(["_classic_"], "chosen"), (["_classic_", "_retail_"], "not-game")])
