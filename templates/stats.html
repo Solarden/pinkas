@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% import "_charts.html" as chart %}
+{% block title %}stats — pinkas{% endblock %}
+{% block main %}
+<div class="title">
+<h1>Stats</h1>
+<p class="muted">From every logout, death, mail and session the addon recorded.</p>
+</div>
+<nav class="range" aria-label="Range">{% for key, label in range_labels %}<a href="/stats?range={{ key }}"{% if key == v.range %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
+
+<section class="stats-part" aria-labelledby="play">
+<h2 id="play">Play</h2>
+<figure class="panel chart">
+<figcaption><h3>Hours played a day</h3><p>All characters over the last 12 months, each character over the range. One span per session, from login to its last logout or reload.</p></figcaption>
+{% set first = v.calendar_main or v.calendar[0] %}{% if first %}<div style="--strip:{{ (first.width * 1.4)|round|int }}px">
+<div class="cal-flow"><div class="cal-year">{{ chart.year(v.calendar_year) }}</div>{% if v.calendar_main %}{{ chart.calendar(v.calendar_main) }}{% endif %}
+{% for strip in v.calendar %}{{ chart.calendar(strip) }}{% endfor %}</div></div>
+<p class="cal-key" aria-hidden="true">0 h <span class="d0"></span><span class="d1"></span><span class="d2"></span><span class="d3"></span><span class="d4"></span><span class="d5"></span> 4 h or more</p>
+{{ chart.table_view(v.calendar_table, "Hours played a day") }}
+{% else %}{{ chart.empty("No sessions in this range.") }}{% endif %}
+</figure>
+</section>
+
+<section class="stats-part" aria-labelledby="levelling">
+<h2 id="levelling">Levelling</h2>
+<div class="charts">
+{{ chart.line("level", v.level, "Level over days", "Level and the share of the bar, at each day's last logout.", "Level of each character by day", "No logouts in this range.") }}
+<section class="panel">
+<h3 class="h3">Level 60</h3>
+{% for c in v.to_max %}<p class="eta"><span class="sw s{{ c.slot }}"></span><span class="n">{{ c.name }}</span> <span class="count">{% if c.at_max %}at 60{% elif c.days is none %}? no progress in 14 days{% else %}in about {{ c.days }} days{% endif %}</span></p>
+{% else %}{{ chart.empty("No levels in this range.") }}{% endfor %}
+<p class="muted note">At the pace of the last 14 days of logouts.</p>
+</section>
+{{ chart.line("time-per-level", v.time_per_level, "Time per level", "Hours played on each level; a gap where the start wasn't seen.", "Hours on each level by character", "No level-ups in this range.") }}
+<figure class="panel chart"><figcaption><h3>Rested share of XP</h3><p>The part of XP the rested bonus gave.</p></figcaption>
+{% for c in v.rested %}{% if c.share is none %}<div class="prof"><span class="n">{{ c.name }}</span><span class="count">—</span></div>
+{% else %}{{ chart.ranked([(c.name, (100 * c.share)|round|int)], "Rested share", fmt=percent, top=100) }}{% endif %}{% else %}{{ chart.empty("No XP in this range.") }}{% endfor %}</figure>
+</div>
+</section>
+
+<section class="stats-part" aria-labelledby="deaths">
+<h2 id="deaths">Deaths <span class="count">{{ v.deaths.count }}</span></h2>
+<div class="charts">
+<figure class="panel chart"><figcaption><h3>Where</h3><p>Deaths per zone.</p></figcaption>
+{% if v.deaths.zones %}{{ chart.ranked(v.deaths.zones, "Deaths") }}{% else %}{{ chart.empty("No deaths in this range.") }}{% endif %}</figure>
+<figure class="panel chart"><figcaption><h3>What killed you</h3><p>The killing blow; another player is “player”, never a name.</p></figcaption>
+{% if v.deaths.killers %}{{ chart.ranked(v.deaths.killers, "Deaths") }}{% else %}{{ chart.empty("No deaths in this range.") }}{% endif %}</figure>
+</div>
+</section>
+
+<section class="stats-part" aria-labelledby="mats">
+<h2 id="mats">Gathering and materials</h2>
+<div class="charts">
+<figure class="panel chart"><figcaption><h3>Gathering</h3><p>Nodes and skins per zone and profession.</p></figcaption>
+{% if v.gathering.rows %}<div class="table-box" tabindex="0" role="region" aria-label="Gathering per zone"><table class="heat">
+<thead><tr><th scope="col">Zone</th>{% for p in v.gathering.professions %}<th scope="col">{{ p }}</th>{% endfor %}</tr></thead>
+<tbody>{% for r in v.gathering.rows %}<tr><th scope="row">{{ r.zone }}</th>{% for cell in r.cells %}<td class="h{{ cell.step }}">{{ cell.value or "" }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+</table></div>{% else %}{{ chart.empty("Nothing gathered in this range.") }}{% endif %}</figure>
+<figure class="panel chart"><figcaption><h3>Material flow</h3><p>Items mailed between your characters: sender → material → recipient.</p></figcaption>
+{% if v.sankey.empty %}{{ chart.empty("No mail between your characters in this range.") }}{% else %}{{ chart.sankey(v.sankey) }}
+{{ chart.table_view(v.sankey.table, "Material flow") }}{% endif %}</figure>
+<figure class="panel chart"><figcaption><h3>Stockpiles</h3><p>Materials in bags and banks, all characters, over the range.</p></figcaption>
+{% for m in v.stockpiles %}{{ chart.spark(m.name, m.spark, m.now ~ "", "{:+}".format(m.change) ~ " in range", wide=true) }}
+{% else %}{{ chart.empty("No materials seen in this range.") }}{% endfor %}</figure>
+</div>
+</section>
+
+<section class="stats-part" aria-labelledby="gold">
+<h2 id="gold">Gold</h2>
+<div class="charts">
+<figure class="panel chart"><figcaption><h3>In and out by source</h3><p>Out (−) to the left, in (+) to the right.</p></figcaption>
+{% if v.gold_sources %}{{ chart.gold_rows(v.gold_sources, v.gold_top) }}{% else %}{{ chart.empty("No gold moved in this range.") }}{% endif %}</figure>
+{{ chart.line("gold-total", v.gold, "Gold over time", "All characters, each at its last known amount.", "Gold held by day", "No logouts in this range.") }}
+</div>
+</section>
+
+<section class="stats-part" aria-labelledby="combat">
+<h2 id="combat">Dungeons and combat</h2>
+<div class="charts">
+<figure class="panel chart"><figcaption><h3>Dungeon runs</h3><p>Average and best over runs that ended inside.</p></figcaption>
+{% if v.dungeons %}<div class="table-box" tabindex="0" role="region" aria-label="Dungeon runs"><table>
+<thead><tr><th scope="col">Dungeon</th><th scope="col">Runs</th><th scope="col">Average</th><th scope="col">Best</th><th scope="col">Deaths</th></tr></thead>
+<tbody>{% for d in v.dungeons %}<tr><th scope="row">{{ d.instance }}</th><td>{{ d.runs }}</td><td>{{ d.average|minutes }}</td><td>{{ d.best|minutes }}</td><td>{{ d.deaths }}</td></tr>{% endfor %}</tbody>
+</table></div>{% else %}{{ chart.empty("No dungeon runs in this range.") }}{% endif %}</figure>
+{{ chart.line("dps", v.dps, "Damage per second, by level", "Damage over time in combat, from the game's meter.", "Damage per second by level", "No fights in this range.") }}
+{{ chart.line("hps", v.hps, "Healing per second, by level", "Healing over time in combat.", "Healing per second by level", "No fights in this range.") }}
+{{ chart.line("deaths-per-hour", v.deaths_per_hour, "Deaths per hour, by level", "Deaths on a level over the hours played on it.", "Deaths per hour by level", "No level times in this range.") }}
+<figure class="panel chart"><figcaption><h3>Fights per death</h3><p>More is better.</p></figcaption>
+{% for c in v.fights_per_death %}{% if c.value is none %}<div class="prof"><span class="n">{{ c.name }}</span><span class="count">no deaths</span></div>
+{% else %}{{ chart.ranked([(c.name, c.value)], "Fights per death", fmt=one_decimal, top=v.fights_top) }}{% endif %}{% else %}{{ chart.empty("No fights in this range.") }}{% endfor %}</figure>
+</div>
+</section>
+
+<section class="stats-part" aria-labelledby="skills">
+<h2 id="skills">Professions</h2>
+{% if v.skills %}<details class="more"><summary>Skill over time <span class="count">{{ v.skills|length }} professions</span></summary>
+<div class="charts">
+{% for s in v.skills %}{{ chart.line("skill-" ~ loop.index, s, s.name, "Skill by day, per character.", s.name ~ " skill by day", "") }}
+{% endfor %}
+</div></details>{% else %}{{ chart.empty("No professions in this range.") }}{% endif %}
+</section>
+
+<script type="application/json" id="charts">{{ v.hover|tojson }}</script>
+{% endblock %}

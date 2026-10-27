@@ -2,9 +2,9 @@
 {% block title %}guide — pinkas{% endblock %}
 {% block main_class %} class="read"{% endblock %}
 {% block main %}
+<h1>Guide</h1>
 {% if html is not none %}
-{% if "<h1" not in html %}<h1 class="sr">Guide</h1>{% endif %}
 <div class="panel">{% include "_guide.html" %}</div>
-{% else %}<h1 class="sr">Guide</h1>
+{% else %}
 <p class="muted">{{ message }}</p>{% endif %}
 {% endblock %}

@@ -71,15 +71,16 @@ def changed(edit) -> bytes:
     [
         (lambda e, c: e.update(v=1), "contract version"),
         (lambda e, c: e.pop("build"), "export: the keys differ"),
-        (lambda e, c: e.update(build=70450), r"export\.build: expected str"),
+        (lambda e, c: e.update(build=70450), r"export\.build: string_type"),
         (lambda e, c: e.update(routes={"herb": "Alt", "gems": "Alt"}), r"export\.routes\[1\]: an unknown kind"),
-        (lambda e, c: e.update(routes={"herb": 1}), r"export\.routes\[0\]: expected str"),
+        (lambda e, c: e.update(routes={"herb": 1}), r"export\.routes\[0\]: expected a name"),
         (lambda e, c: c.pop("money"), r"chars\[0\]: the keys differ"),
         (lambda e, c: c.update(extra=1), r"chars\[0\]: the keys differ"),
-        (lambda e, c: c.update(level="10"), r"chars\[0\]\.level: expected int"),
-        (lambda e, c: c.update(resting=1), r"chars\[0\]\.resting: expected bool"),
-        (lambda e, c: c["bags"][1].update(count=True), r"chars\[0\]\.bags\[1\]\.count: expected int"),
-        (lambda e, c: c.update(events=[{"id": 1, "at": 1, "kind": "kill", "value": {}}]), "unknown kind"),
+        (lambda e, c: c.update(level="10"), r"chars\[0\]\.level: int_type"),
+        (lambda e, c: c.update(resting=1), r"chars\[0\]\.resting: bool_type"),
+        (lambda e, c: c["bags"][1].update(count=True), r"chars\[0\]\.bags\[1\]\.count: int_type"),
+        (lambda e, c: c["bags"][1].update(id=2**31), r"chars\[0\]\.bags\[1\]\.id: less_than"),
+        (lambda e, c: c.update(events=[{"id": 1, "at": 1, "kind": "kill", "value": {}}]), r"chars\[0\]\.events\[0\]: union_tag_invalid"),
         (lambda e, c: c.update(name="Other"), "not realm/name"),
         (
             lambda e, c: c.update(totals=[{"session": 1, "kind": "gold", "key": "loot", "value": {}}] * 2),
@@ -88,7 +89,7 @@ def changed(edit) -> bytes:
     ],
     ids=[
         "version", "no build", "numeric build", "unknown route kind", "numeric recipient", "missing key",
-        "extra key", "string level", "int bool", "bool count", "unknown kind",
+        "extra key", "string level", "int bool", "bool count", "item id past int", "unknown kind",
         "key mismatch", "duplicate total",
     ],
 )
@@ -110,11 +111,12 @@ def changed_v3(edit) -> bytes:
         (lambda e, c: e.update(v=4), "contract version"),
         (lambda e, c: c.pop("bag_slots"), r"chars\[0\]: the keys differ"),
         (lambda e, c: c["bags"][0].pop("quality"), r"chars\[0\]\.bags\[0\]: the keys differ"),
-        (lambda e, c: c["bags"][0].update(quality="1"), r"chars\[0\]\.bags\[0\]\.quality: expected int"),
+        (lambda e, c: c["bags"][0].update(quality="1"), r"chars\[0\]\.bags\[0\]\.quality: int_type"),
         (lambda e, c: c.update(bank={"as_of": 1, "items": []}), r"chars\[0\]\.bank: the keys differ"),
-        (lambda e, c: c.update(bag_slots=80.5), r"chars\[0\]\.bag_slots: expected int"),
+        (lambda e, c: c.update(bag_slots=80.5), r"chars\[0\]\.bag_slots: int_type"),
+        (lambda e, c: c.update(bags=c["bags"][:1] * 301), r"chars\[0\]\.bags: too_long"),
     ],
-    ids=["future version", "no bag slots", "v2 item", "string quality", "v2 bank", "float slots"],
+    ids=["future version", "no bag slots", "v2 item", "string quality", "v2 bank", "float slots", "too many bag items"],
 )
 def test_the_v3_contract_is_enforced(edit, message):
     with pytest.raises(ParseError, match=message):
@@ -133,8 +135,98 @@ def test_null_is_allowed_where_the_contract_allows_it():
     assert parse(changed(unknown))["chars"][KEY]["level"] is None
 
 
-def test_an_error_never_carries_a_value():
+@pytest.mark.parametrize(
+    ("edit", "secret"),
+    [(lambda e, c: c.update(zone=12345678), "12345678"), (lambda e, c: c.update(Secretname=1), "Secretname")],
+    ids=["value", "unknown key"],
+)
+def test_an_error_never_carries_a_value(edit, secret):
     with pytest.raises(ParseError) as caught:
-        parse(changed(lambda e, c: c.update(zone=12345678)))
+        parse(changed(edit))
 
-    assert "12345678" not in str(caught.value) and "Fakechar" not in str(caught.value)
+    assert secret not in str(caught.value) and "Fakechar" not in str(caught.value)
+
+
+def with_value(part: str, kind: str, value: dict):
+    if part == "events":
+        row = {"id": 1, "at": 1, "kind": kind, "value": value}
+    else:
+        row = {"session": 1, "kind": kind, "key": "k", "value": value}
+
+    return lambda e, c: c.update({part: [row]})
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (with_value("events", "level", {"level": "5"}), r"events\[0\]\.level\.value\.level: int_type"),
+        (with_value("events", "death", {"zone": ["x"]}), r"events\[0\]\.death\.value\.zone: string_type"),
+        (with_value("events", "mail", {"to": "Testrealm/Alt", "items": [5]}), r"mail\.value\.items\[0\]: dict_type"),
+        (with_value("events", "mail", {"items": [{"id": 1, "count": "3"}]}), r"mail\.value\.items\[0\]\.count: int_type"),
+        (with_value("events", "dungeon", {"deaths": "1"}), r"events\[0\]\.dungeon\.value\.deaths: int_type"),
+        (with_value("totals", "gold", {"in": "5"}), r"totals\[0\]\.gold\.value\.in: int_type"),
+    ],
+    ids=["string level", "list zone", "item not an object", "string count", "string deaths", "string gold"],
+)
+def test_a_value_field_stats_reads_is_checked(edit, message):
+    with pytest.raises(ParseError, match=message):
+        parse(changed(edit))
+
+
+def test_a_value_field_may_be_missing_null_or_unknown():
+    death = {"level": 9, "zone": None, "recap_id": 3}
+
+    assert parse(changed(with_value("events", "death", death)))["chars"][KEY]["events"][0]["value"] == death
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [lambda e, c: c.update(level=2**60), with_value("events", "level", {"level": 10**400}),
+     with_value("totals", "combat", {"damage": 1e308})],
+    ids=["huge level", "huge level event", "huge damage"],
+)
+def test_a_number_past_what_lua_writes_is_refused(edit):
+    with pytest.raises(ParseError, match="less_than_equal"):
+        parse(changed(edit))
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (with_value("events", "mail", {"items": [{"id": 1, "count": 5e-324}]}), r"items\[0\]\.count: int_type"),
+        (with_value("totals", "gather", {"count": -9}), r"gather\.value\.count: greater_than_equal"),
+        (with_value("totals", "rested", {"xp": 0.5}), r"rested\.value\.xp: int_type"),
+        (lambda e, c: c.update(zone="x" * 257), r"chars\[0\]\.zone: string_too_long"),
+        (lambda e, c: c.update(professions=c["professions"][:1] * 21), r"chars\[0\]\.professions: too_long"),
+        (with_value("events", "mail", {"items": [{}] * 17}), r"mail\.value\.items: too_long"),
+        (lambda e, c: c.update(bags=c["bags"][:1] * 301), r"chars\[0\]\.bags: too_long"),
+        (lambda e, c: c.update(events=[{"id": i, "at": 1, "kind": "quest", "value": {}} for i in range(501)]),
+         r"chars\[0\]\.events: too_long"),
+    ],
+    ids=["tiny count", "negative count", "fractional xp", "long text", "too many professions", "too many attachments",
+         "too many bag items", "too many events"],
+)
+def test_counts_texts_and_lists_are_bounded(edit, message):
+    with pytest.raises(ParseError, match=message):
+        parse(changed(edit))
+
+
+def test_too_many_characters_are_refused():
+    export = account()
+    char = export["chars"][KEY]
+    export["chars"] = {f"Testrealm/C{i}": {**char, "name": f"C{i}"} for i in range(201)}
+
+    with pytest.raises(ParseError, match=r"export\.chars: too_long"):
+        parse(with_export(export))
+
+
+def test_a_negative_run_duration_still_parses():
+    run = {"instance": "Ragefire Chasm", "deaths": 0, "duration": -30, "ended_by_logout": True}
+
+    assert parse(changed(with_value("events", "dungeon", run)))["chars"][KEY]["events"][0]["value"] == run
+
+
+def test_a_negative_time_on_a_level_still_parses():
+    level = {"level": 2, "played_level": -499400}
+
+    assert parse(changed(with_value("events", "level", level)))["chars"][KEY]["events"][0]["value"] == level

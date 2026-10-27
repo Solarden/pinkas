@@ -4,18 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}pinkas{% endblock %}</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E📒%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='13' fill='%230f1115'/%3E%3Cpolygon points='10,18 30,22 30,48 10,44' fill='%234f8cff'/%3E%3Cpolygon points='34,22 54,18 54,44 34,48' fill='%234f8cff'/%3E%3C/svg%3E">
 <style>
 /* skin:begin — generated from skin/skin.css in the owner's infra repo; edit it there, then run skin/sync.py --write */
 :root{--bg:#0f1115;--panel:#1a1d24;--line:#2a2f3a;--fg:#e6e9ef;--muted:#9aa3b2;
 --accent:#4f8cff;--accent-strong:#3366cc;--field-border:#6b7280;--neg:#f0686b;--pos:#3fb950;
---warn:#d29922;--sans:system-ui,-apple-system,sans-serif;
+--warn:#d29922;--neg-surface:#3a1c1e;--on-neg-surface:#ffd5d6;
+--pos-surface:#16321f;--on-pos-surface:#b9f6ca;
+--chart-1:#3987e5;--chart-2:#d95926;--chart-3:#1fa4ad;--chart-4:#c98500;
+--chart-5:#c4549a;--chart-6:#3e9a4a;--chart-7:#9085e9;--chart-8:#e66767;
+--sans:system-ui,-apple-system,sans-serif;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);color-scheme:dark;
-font-family:var(--sans);font-size:15px;line-height:1.5}
+font-family:var(--sans);font-size:15px;line-height:1.5;overflow-wrap:break-word}
 header{border-bottom:1px solid var(--line)}
-header h1{margin:0;font-size:1rem}
+.brand{margin:0;font-size:1rem;font-weight:700}
+a.brand,.brand a{color:inherit;text-decoration:none}
+h1,h2{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 footer{border-top:1px solid var(--line);color:var(--muted);font-size:12px;text-align:center}
 a{color:var(--accent)}
 label{color:var(--muted);font-size:13px}
@@ -27,62 +33,77 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 button{cursor:pointer;border-color:var(--accent-strong);background:var(--accent-strong);color:#fff;font-weight:600}
 :where(button:not(:disabled)):hover{border-color:var(--accent);background:#2e62c4}
 button:disabled{opacity:.5;cursor:not-allowed}
+button.quiet{border-color:var(--field-border);background:var(--bg);color:var(--fg)}
+button.quiet:not(:disabled):hover{border-color:var(--accent);background:var(--panel)}
+button.linkish{border:0;background:none;color:var(--muted);font-size:13px;font-weight:400;text-decoration:underline}
+button.linkish:not(:disabled):hover{background:none;color:var(--fg)}
 table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid var(--line);text-align:left}
 th{font-size:13px;font-weight:600;color:var(--muted)}
 .panel{border:1px solid var(--line);border-radius:.5rem;background:var(--panel)}
 .muted{color:var(--muted)}
+.sr-only{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);clip-path:inset(50%);white-space:nowrap;border:0}
 .pos{color:var(--pos)}.neg{color:var(--neg)}.warn{color:var(--warn)}
 .pill{display:inline-block;padding:.05rem .4rem;border:1px solid currentColor;border-radius:.375rem;
-font-size:11px;font-weight:600;white-space:nowrap}
-.flash.error{border:1px solid var(--neg);border-radius:.375rem;background:#3a1c1e;color:#ffd5d6}
+font-size:12px;font-weight:600;white-space:nowrap}
+.flash.error{border:1px solid var(--neg);border-radius:.375rem;background:var(--neg-surface);color:var(--on-neg-surface)}
+.flash.ok{border:1px solid var(--pos);border-radius:.375rem;background:var(--pos-surface);color:var(--on-pos-surface)}
 /* skin:end */
 /* Layout. The page is full width; card and column minimums decide how many fit, not page breakpoints.
-   A card's insides follow the card's own width (container queries). One media query, 1100px: the Guide side column. */
-:root{--gutter:clamp(1rem,2.5vw,2rem);--gap:1rem}
+   A card's insides follow the card's own width (container queries). One media query, 1100px: the Guide side column.
+   Sizes follow the Homelab Skin: spacing on the 4px scale, type in its steps (16 title, 15 body, 13 section,
+   label and table head, 12 footer and pill). */
+:root{--gutter:clamp(1rem,2.5vw,2rem);--gap:1rem;
+/* pinkas's own colours, the only hex values outside the skin: the magnitude ramp, brighter is more, and the
+   game's item quality. Bars and single-series charts use the skin's first chart colour. */
+--data:var(--chart-1);
+--heat-1:#184f95;--heat-2:#1c5cab;--heat-3:#2466b8;--heat-4:#3987e5;--heat-5:#6da7ec;
+/* Item quality from the game (q0 poor … q5 legendary; q1 common is plain text). Rare and epic are lightened from
+   #0070dd / #a335ee to reach 4.5:1 on --panel. */
+--q0:#9d9d9d;--q2:#1eff00;--q3:#4aa8ff;--q4:#c27cff;--q5:#ff8000}
 [hidden]{display:none!important}
-body{font-size:16px;overflow-wrap:break-word}
-h2,.login h1,.settings h3{margin:0 0 .5rem;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.label{display:block;color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+/* .settings h3 and .label borrow the skin's h1 and h2 look. */
+h1,h2,.settings h3{margin:0 0 .5rem}
+.settings h3,.label{font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.label{display:block}
 /* Visually hidden, still read by screen readers: item rarity, separators inside flex headings. */
 .sr{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
 /* Flex rows break long game text only when their name sits in a min-width:0 item; never overflow-wrap:anywhere. */
 .n{min-width:0}
 .count{color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .panel{padding:.75rem 1rem}
+/* A first child's top margin would stack on the padding (Homelab Skin, Panel). */
+.panel > :first-child{margin-top:0}
 button{min-height:2.75rem;padding:0 1rem}
-button.quiet{background:var(--bg);border-color:var(--field-border);color:var(--fg);font-weight:400}
-button.quiet:hover{border-color:var(--accent);background:var(--panel)}
-input,select{min-height:2.75rem;padding:0 .6rem}
+input,select{min-height:2.75rem;padding:0 .5rem}
 meter{display:block;width:100%;height:.5rem}
 meter::-webkit-meter-bar{height:.5rem;border:1px solid var(--field-border);border-radius:.25rem;background:var(--bg)}
-/* Bars in the darker accent so links stay the brightest blue on the page. */
-meter::-webkit-meter-optimum-value{border-radius:.25rem;background:var(--accent-strong)}
-meter::-moz-meter-bar{border-radius:.25rem;background:var(--accent-strong)}
+meter::-webkit-meter-optimum-value{border-radius:.25rem;background:var(--data)}
+meter::-moz-meter-bar{border-radius:.25rem;background:var(--data)}
 .met meter::-webkit-meter-optimum-value{background:var(--pos)}
 .met meter::-moz-meter-bar{background:var(--pos)}
 
 header{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1.25rem;padding:.5rem var(--gutter)}
-.brand{margin:0;font-weight:600}
-.brand a{display:inline-block;padding-block:.6rem;color:inherit;text-decoration:none}
+.brand a{display:inline-block;padding-block:.75rem}
 header form{margin:0}
 header .search{flex:1 1 12rem;max-width:32rem}
 header input[type=search]{width:100%;min-height:2.5rem;padding:0 .75rem}
-header nav{display:flex;gap:1rem;font-size:14px}
-header nav a{padding:.6rem 0}
+header nav{display:flex;gap:1rem}
+header nav a{padding:.75rem 0}
 header .logout{margin-left:auto}
-button.linkish{padding:0 .25rem;border:0;background:none;color:var(--muted);font-size:13px;font-weight:400;text-decoration:underline}
-button.linkish:hover{background:none;color:var(--fg)}
+button.linkish{padding:0 .25rem}
 main{display:flex;flex-direction:column;gap:var(--gap);padding:var(--gap) var(--gutter)}
+/* The first element sits on main's padding; its own top margin would stack on it (layout.md). */
+main > :first-child{margin-top:0}
 
 /* home */
 .overview{display:flex;flex-wrap:wrap;align-items:flex-start;gap:var(--gap)}
 .overview > .account{flex:999 1 36rem;min-width:0}
 .overview > .mail{flex:1 1 24rem}
-.mail .label{margin-top:.9rem}
+.mail .label{margin-top:1rem}
 .plan li{flex-wrap:wrap}
 /* Small links outside running text get at least 24px of height. */
-.plan a,.account .prof a.n,.group > .label a{display:inline-block;padding-block:.3rem}
+.plan a,.account .prof a.n,.group > .label a{display:inline-block;padding-block:.25rem}
 /* Names in data lists: no underline (they aren't in running text), underline on hover. */
 .plan a,.account .prof a.n{text-decoration:none}
 .plan a:hover,.account .prof a.n:hover{text-decoration:underline}
@@ -94,7 +115,7 @@ main{display:flex;flex-direction:column;gap:var(--gap);padding:var(--gap) var(--
 .account:not([open]) h2{margin-bottom:0}
 .account h2{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.25rem 1rem}
 .account h2 .gold{color:var(--fg);font-size:15px;font-weight:400;text-transform:none;letter-spacing:0}
-.account .professions{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,9rem),1fr));gap:.75rem 1rem;font-size:14px}
+.account .professions{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,9rem),1fr));gap:.75rem 1rem}
 .tools{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1.25rem}
 .tools label{display:flex;align-items:center;gap:.5rem}
 .tools input{width:16rem;max-width:100%}
@@ -102,40 +123,40 @@ main{display:flex;flex-direction:column;gap:var(--gap);padding:var(--gap) var(--
 /* Every row is as tall as the tallest card, so all cards match; a fixed height would clip long names. */
 .chars{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,30rem),1fr));grid-auto-rows:1fr;gap:var(--gap)}
 .char{container-type:inline-size;min-width:0;display:flex;flex-direction:column}
-.char.playing{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
-.pill.now{color:var(--accent)}
+/* The character being played: an inset ring in the "playing" pill's colour, a border that keeps the card's size. */
+.char.playing{border-color:var(--pos);box-shadow:inset 0 0 0 1px var(--pos)}
 .char .top{display:flex;align-items:flex-start;gap:.75rem}
 .char .who{flex:1;min-width:0}
-.char h2.cname{display:inline;margin:0;font-size:inherit;font-weight:inherit;color:inherit;text-transform:none;letter-spacing:0}
-.char .name{display:inline-block;padding-block:.15rem;font-size:1.1rem;font-weight:600;text-decoration:none}
+.char h3.cname{display:inline;margin:0;font-size:inherit}
+.char .name{display:inline-block;padding-block:.25rem;font-size:16px;font-weight:600;text-decoration:none}
 .char .name:hover{text-decoration:underline}
-.char .sub{display:block;color:var(--muted);font-size:14px}
+.char .sub{display:block;color:var(--muted);font-size:13px}
 .char form{margin:0}
-.facts{display:grid;gap:.75rem 1.25rem;margin-block:.75rem;font-size:14px}
+.facts{display:grid;gap:.75rem 1.25rem;margin-block:.75rem}
 .facts > *{min-width:0}
 @container (min-width:18rem){.facts{grid-template-columns:repeat(2,minmax(0,1fr))}.facts .sec{grid-column:2}}
 @container (min-width:34rem){.facts{grid-template-columns:repeat(3,minmax(0,1fr))}.facts .sec{grid-column:auto}}
-.stat + .stat{margin-top:.6rem}
-.stat .val{color:var(--muted)}
-.char .foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.25rem 1rem;margin-top:auto;padding-top:.5rem;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+.stat + .stat{margin-top:.5rem}
+.stat .val{color:var(--muted);font-size:13px}
+.char .foot{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.25rem 1rem;margin-top:auto;padding-top:.5rem;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
 @container (min-width:26rem){.char .foot{display:grid;grid-template-columns:1fr auto 1fr}.char .foot > :last-child{grid-column:-2;text-align:right}}
 .char .foot b{color:var(--fg);font-weight:400}
 .char .foot b.warn{color:var(--warn)}
 .char .foot b.neg{color:var(--neg)}
-.char .cname + .pill{margin-left:.4rem;vertical-align:.15em}
+.char .cname + .pill{margin-left:.5rem;vertical-align:.25em}
 /* Hints: a rank at its cap with no higher target needs a trainer; an "as of" older than 3 days may be out of date. */
 .prof.cap .count,.stale{color:var(--warn)}
 .prof.cap meter::-webkit-meter-optimum-value{background:var(--warn)}
 .prof.cap meter::-moz-meter-bar{background:var(--warn)}
 .prof{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;column-gap:.5rem}
-.prof + .prof{margin-top:.4rem}
+.prof + .prof{margin-top:.5rem}
 .prof.met .count{color:var(--pos)}
-.prof meter{flex:1 0 100%;margin-top:.15rem}
+.prof meter{flex:1 0 100%;margin-top:.25rem}
 .prof .note{flex:1 0 100%;color:var(--muted);font-size:13px}
 
 /* character */
 .title{display:flex;flex-wrap:wrap;align-items:baseline;gap:.25rem 1rem}
-.title h1{margin:0;min-width:0;font-size:1.5rem;line-height:1.25}
+.title h1{margin:0;min-width:0}
 .title p{margin:0}
 .with-side{display:flex;flex-wrap:wrap;align-items:flex-start;gap:var(--gap)}
 .with-side > .cols{flex:999 1 30rem;min-width:0}
@@ -148,88 +169,186 @@ details.side[open]{flex-basis:clamp(28rem,38%,46rem)}
 .cols{columns:20rem;column-gap:var(--gap)}
 .cols > *{break-inside:avoid;margin:0 0 var(--gap)}
 ul.plain{list-style:none;margin:0;padding:0}
-ul.plain li{display:flex;justify-content:space-between;gap:.75rem;padding:.3rem 0;border-bottom:1px solid var(--line)}
+ul.plain li{display:flex;justify-content:space-between;gap:.75rem;padding:.25rem 0;border-bottom:1px solid var(--line)}
 ul.plain li:last-child{border-bottom:0}
-/* Item quality colours from the game (q0 poor … q5 legendary; q1 common is plain text).
-   Rare and epic are lightened from #0070dd / #a335ee to reach 4.5:1 on --panel. */
-.q0{color:#9d9d9d}.q2{color:#1eff00}.q3{color:#4aa8ff}.q4{color:#c27cff}.q5{color:#ff8000}
+.q0{color:var(--q0)}.q2{color:var(--q2)}.q3{color:var(--q3)}.q4{color:var(--q4)}.q5{color:var(--q5)}
 h2.head{display:flex;justify-content:space-between;gap:.75rem}
 h2.head .count{font-weight:400;text-transform:none;letter-spacing:0}
 /* Slots: yellow from 70% used, red from 90% (meter low/high, optimum 0). */
-meter.slots{margin-bottom:.6rem}
+meter.slots{margin-bottom:.5rem}
 meter.slots::-webkit-meter-suboptimum-value{border-radius:.25rem;background:var(--warn)}
 meter.slots::-webkit-meter-even-less-good-value{border-radius:.25rem;background:var(--neg)}
 meter.slots:-moz-meter-sub-optimum::-moz-meter-bar{background:var(--warn)}
 meter.slots:-moz-meter-sub-sub-optimum::-moz-meter-bar{background:var(--neg)}
 .group + .group{margin-top:.75rem}
 /* Short notes under a heading, and the sub-heading inside a panel. */
-p.note{margin:0}.mail p.note{margin:.25rem 0 0;font-size:14px}p.note.set{margin-top:.75rem}h2.sub{margin-top:1rem}
-.group > .label{display:flex;justify-content:space-between;gap:.5rem;padding-bottom:.2rem;border-bottom:1px solid var(--line)}
+p.note{margin:0;font-size:13px}.mail p.note{margin:.25rem 0 0}p.note.set{margin-top:.75rem}h2.sub{margin-top:1rem}
+.group > .label{display:flex;justify-content:space-between;gap:.5rem;padding-bottom:.25rem;border-bottom:1px solid var(--line)}
 
 /* search */
 .found-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,22rem),1fr));gap:var(--gap);align-items:start}
-.found h2{display:flex;justify-content:space-between;gap:.75rem;margin:0 0 .25rem;font-size:1rem;color:var(--fg);text-transform:none;letter-spacing:0}
+.found h3{display:flex;justify-content:space-between;gap:.75rem;margin:0 0 .25rem;font-size:15px;font-weight:600}
 .found li{flex-wrap:wrap}
 
-/* guide: prose capped for reading, tables may be wider; on /guide the column is centred */
+/* guide: the handbook's own headings keep a reading scale, the one place outside the skin's type steps; prose
+   capped for reading, tables may be wider; on /guide the column is centred */
 .guide{line-height:1.6}
+/* Its first heading's margin would pass through the article and stack on the panel's padding. */
+.guide > :first-child{margin-top:0}
 .side .guide{padding:0 1rem 1rem}
 .guide > *{max-width:42rem}
 .guide > .table-box{max-width:100%}
 .read .guide > *{margin-inline:auto}
-.guide h1,.guide h2,.guide h3,.guide h4,.guide h5{color:var(--fg);text-transform:none;letter-spacing:0;line-height:1.3;margin-block:1.8rem .6rem}
-.guide h1{font-size:1.6rem;margin-top:.4rem}
-.guide h2{font-size:1.25rem;padding-bottom:.3rem;border-bottom:1px solid var(--line)}
-.guide h3{font-size:1.05rem}
-.guide h4{font-size:.95rem;color:var(--muted)}
-/* Beside a character the handbook starts at h2 (the character is the page's h1), styled one level up. */
-.side .guide h2{font-size:1.6rem;margin-top:.4rem;padding-bottom:0;border-bottom:0}
-.side .guide h3{font-size:1.25rem;padding-bottom:.3rem;border-bottom:1px solid var(--line)}
-.side .guide h4{font-size:1.05rem;color:var(--fg)}
-.side .guide h5{font-size:.95rem;color:var(--muted)}
-.guide li{margin:.2rem 0}
+/* The handbook starts at h2 on both pages, under the page's own h1. */
+.guide h2,.guide h3,.guide h4,.guide h5,.guide h6{color:var(--fg);text-transform:none;letter-spacing:0;line-height:1.3;margin-block:2rem .5rem}
+.guide h2{font-size:1.5rem;margin-top:.5rem}
+.guide h3{font-size:1.25rem;padding-bottom:.25rem;border-bottom:1px solid var(--line)}
+.guide h4{font-size:1rem}
+.guide h5,.guide h6{font-size:15px;color:var(--muted)}
+.guide li{margin:.25rem 0}
 .guide li.task{list-style:none;margin-left:-1.25rem}
-.guide blockquote{margin-block:.8rem;padding:.2rem 1rem;border-left:3px solid var(--line);color:var(--muted)}
-.guide code{font-family:var(--mono);font-size:.9em;background:var(--bg);padding:.05rem .3rem;border-radius:.25rem}
+.guide blockquote{margin-block:.75rem;padding:.25rem 1rem;border-left:3px solid var(--line);color:var(--muted)}
+.guide code{font-family:var(--mono);font-size:.9em;background:var(--bg);padding:0 .25rem;border-radius:.25rem}
 /* The scroll sits on a wrapper: display:block on the table itself drops its table semantics in some browsers. */
 .guide .table-box{width:fit-content;overflow-x:auto;margin-block:1rem}
 .guide table{width:auto}
-.guide th,.guide td{min-width:8ch;padding:.4rem .7rem;vertical-align:top}
+.guide th,.guide td{min-width:8ch;padding:.5rem .75rem;vertical-align:top}
 
 /* settings */
 .settings-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,24rem),1fr));gap:var(--gap);align-items:start}
 .settings .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(7rem,11rem);gap:.5rem;align-items:center}
-.settings .row + .row{margin-top:.4rem}
-.settings .row label{color:var(--fg);font-size:14px}
+/* A field and the next row's label stay 12px apart (Homelab Skin, Field), so a label never reads as the field above's. */
+.settings .row + .row{margin-top:.75rem}
 .settings input,.settings select{width:100%}
 .settings h2 + .row{margin-top:0}
 .settings h3{margin-top:1rem}
-.settings details{margin-top:.4rem}
-.settings summary{padding:.6rem 0;cursor:pointer;color:var(--muted);font-size:14px}
-.settings label.check{display:flex;align-items:center;gap:.5rem;margin:.75rem 0 0;color:var(--fg);font-size:14px}
+.settings details{margin-top:.5rem}
+.settings summary{padding:.5rem 0;cursor:pointer;color:var(--muted);font-size:13px}
+.settings label.check{display:flex;align-items:center;gap:.5rem;margin:.75rem 0 0}
 .settings label.check input{width:1.5rem;min-height:0;height:1.5rem}
 .settings button{margin-top:1rem}
 
 /* login */
-.login{width:min(100%,22rem);margin:4rem auto 0}
+.login{width:min(100%,22rem);margin:0 auto}
 .login button{width:100%}
-.flash{padding:.7rem 1rem;margin-bottom:1rem}
-.field{display:flex;flex-direction:column;gap:.3rem;margin-bottom:.8rem}
+.flash{padding:.75rem 1rem;margin-bottom:1rem}
+.field{display:flex;flex-direction:column;gap:.25rem;margin-bottom:.75rem}
 .field input{width:100%}
 
 /* stats for nerds */
 details.nerd{margin:1rem var(--gutter) 1.5rem;color:var(--muted);font-size:13px}
-details.nerd summary{width:fit-content;padding-block:.3rem;cursor:pointer}
-details.nerd dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.2rem .8rem;margin:.6rem 0}
+details.nerd summary{width:fit-content;padding-block:.25rem;cursor:pointer}
+details.nerd dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.25rem .75rem;margin:.5rem 0}
 details.nerd dd{margin:0;color:var(--fg);font-family:var(--mono)}
-details.nerd pre{max-height:24rem;overflow:auto;padding:.6rem;font-size:12px;color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere}
+details.nerd pre{max-height:24rem;overflow:auto;padding:.5rem;font-size:12px;color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere}
+/* stats: charts drawn by the server as HTML and inline SVG. */
+/* A chart card's 34rem minimum keeps an SVG's 13px labels at ~11px or more; narrower, its box scrolls. */
+.range{display:flex;flex-wrap:wrap;gap:.5rem}
+.range a{display:inline-flex;align-items:center;min-height:2.75rem;padding:0 1rem;border:1px solid var(--field-border);border-radius:.375rem;color:var(--fg);text-decoration:none}
+.range a:hover{border-color:var(--accent)}
+/* The shown range: a heavier word and an inset ring in text colour, not a colour or a glyph alone. */
+.range a[aria-current]{background:var(--panel);font-weight:600;box-shadow:inset 0 0 0 1px var(--fg);border-color:var(--fg)}
+.stats-part > h2{display:flex;gap:.75rem;margin:.75rem 0 .5rem}
+.stats-part > h2 .count{font-weight:400;text-transform:none;letter-spacing:0}
+.charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,34rem),1fr));gap:var(--gap);align-items:start}
+figure.chart{position:relative;margin:0;min-width:0}
+.chart figcaption{margin-bottom:.5rem}
+.chart h3,.h3{margin:0;font-size:15px;font-weight:600}
+.chart figcaption p{margin:0;color:var(--muted);font-size:13px}
+.empty{margin:.5rem 0}
+.chart-box{overflow-x:auto}
+.chart-box svg{display:block;width:100%;min-width:34rem;height:auto}
+.chart svg text{fill:var(--muted);font:13px var(--sans)}
+.chart svg .grid{stroke:var(--line);stroke-width:1}
+.chart svg .series{fill:none;stroke:currentColor;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.chart svg .end{fill:currentColor;stroke:var(--panel);stroke-width:2}
+.chart svg .end-label{fill:var(--fg)}
+.chart svg .hit{fill:transparent}
+.chart svg .hit:hover{fill:currentColor;fill-opacity:.35}
+/* A character's colour, by id, from the skin's chart palette, as currentColor; 0 is "other". */
+.s0{color:var(--muted)}.s1{color:var(--chart-1)}.s2{color:var(--chart-2)}.s3{color:var(--chart-3)}.s4{color:var(--chart-4)}
+.s5{color:var(--chart-5)}.s6{color:var(--chart-6)}.s7{color:var(--chart-7)}.s8{color:var(--chart-8)}
+/* Identity is the swatch beside the name; the name itself stays in text ink. */
+.sw{display:inline-block;width:1rem;height:.25rem;margin-right:.5rem;vertical-align:.25em;border-radius:1px;background:currentColor}
+.legend{display:flex;flex-wrap:wrap;gap:.25rem 1rem;margin:.5rem 0 0;padding:0;list-style:none;font-size:13px}
+.table-view{margin-top:.5rem}
+.table-view summary{width:fit-content;padding:.5rem 0;cursor:pointer;color:var(--muted);font-size:13px}
+.chart .table-box{overflow-x:auto;max-height:24rem}
+.chart th,.chart td{padding:.25rem .5rem;white-space:nowrap}
+.chart td{font-variant-numeric:tabular-nums}
+.chart th[scope=row]{color:var(--fg);font-weight:400;white-space:normal}
+/* The crosshair and its readout, drawn by pinkas.js; a floating layer on a panel fill with a field-border edge. */
+.chart svg .cross{stroke:var(--fg);stroke-opacity:.5;stroke-width:1;visibility:hidden;pointer-events:none}
+.tip{position:absolute;top:4.5rem;z-index:1;display:flex;flex-direction:column;gap:.25rem;padding:.5rem .75rem;border:1px solid var(--field-border);border-radius:.375rem;background:var(--panel);font-size:13px;font-variant-numeric:tabular-nums;pointer-events:none}
+.tip strong{color:var(--fg)}
+/* A folded group of charts (one per profession), closed to keep the page short on a phone; not a panel itself. */
+details.more > summary{width:fit-content;padding:.5rem 0;cursor:pointer;font-weight:600}
+details.more[open] > summary{margin-bottom:.5rem}
+details.more .count{margin-left:.5rem;font-weight:400}
+/* calendar: one strip per character, weeks across, Monday on top; brighter is more hours */
+/* The account's year at the characters' cell size (--year, its drawn width); narrower than that, it scrolls
+   inside its box. */
+/* Where it scrolls, it opens at its newest weeks (the right end): the box runs right to left, the year inside left to right. */
+.year-box{overflow-x:auto;direction:rtl}
+/* The year, then the main character's strip, then the others, flowing at their own widths with even gaps, so
+   strips fill the row beside the year and wrap below it without columns wider than a strip. */
+.cal-flow{display:flex;flex-wrap:wrap;align-items:flex-start;gap:1rem 1.5rem}
+.cal-year{min-width:0;max-width:100%}
+.cal-flow > .cal{width:var(--strip);max-width:100%}
+.year{display:grid;grid-template-columns:auto var(--year);gap:.25rem .5rem;width:max-content;direction:ltr}
+.year-months{display:flex;color:var(--muted);font-size:13px}
+.year-months span{min-width:0;overflow:hidden;white-space:nowrap}
+.year-days{display:grid;grid-template-rows:repeat(7,1fr);align-items:center;color:var(--muted);font-size:13px}
+.year svg{display:block;width:100%;height:auto}
+.year svg rect:hover{stroke:var(--fg);stroke-width:1}
+.cal svg{max-width:var(--strip)}
+.cal-name{margin:0 0 .25rem;font-size:13px}
+.cal svg{display:block;width:100%;height:auto}
+.cal svg text{fill:var(--muted);font:9px var(--sans)}
+.cal svg rect:hover{stroke:var(--fg);stroke-width:1}
+.d0{fill:var(--bg);background:var(--bg)}.d1{fill:var(--heat-1);background:var(--heat-1)}.d2{fill:var(--heat-2);background:var(--heat-2)}
+.d3{fill:var(--heat-3);background:var(--heat-3)}.d4{fill:var(--heat-4);background:var(--heat-4)}.d5{fill:var(--heat-5);background:var(--heat-5)}
+.cal-key{display:flex;align-items:center;gap:.25rem;margin:.5rem 0 0;color:var(--muted);font-size:13px}
+.cal-key span{display:inline-block;width:11px;height:11px;border:1px solid var(--line);border-radius:2px}
+.eta{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 .5rem;margin:.25rem 0}
+.eta .count{margin-left:auto}
+/* gathering: a heat table, the number in every cell; dark ink on the two brightest steps */
+.heat td{text-align:right}
+.heat .h1{background:var(--heat-1)}.heat .h2{background:var(--heat-2)}.heat .h3{background:var(--heat-3)}
+.heat .h4{background:var(--heat-4);color:var(--bg)}.heat .h5{background:var(--heat-5);color:var(--bg)}
+/* Sankey: bands in the sender's or recipient's colour, materials in grey */
+.chart svg .band{fill:currentColor;fill-opacity:.35}
+.chart svg .band:hover{fill-opacity:.65}
+.chart svg .node{fill:currentColor}
+.chart svg rect.node:not([class*=" s"]){fill:var(--muted)}
+.chart svg .halo{fill:var(--fg);paint-order:stroke;stroke:var(--panel);stroke-width:3px}
+.chart svg .halo .v{fill:var(--muted)}
+/* gold out (neg, left) and in (pos, right) from the middle; the amounts carry their sign */
+.dv{display:grid;grid-template-columns:1fr 1fr;column-gap:2px;row-gap:.25rem}
+.dv + .dv{margin-top:.5rem}
+.dv-head{grid-column:1 / -1;display:flex;flex-wrap:wrap;justify-content:space-between;gap:0 .75rem}
+.dv-head .count{font-size:13px}
+.dv-out{display:flex;justify-content:flex-end}
+.dv .bar{display:block;height:.5rem}
+.dv-out .bar{border-radius:4px 0 0 4px;background:var(--neg)}
+.dv-in .bar{border-radius:0 4px 4px 0;background:var(--pos)}
+.note{margin:.5rem 0 0;font-size:13px}
+/* character page: sparklines under Next level */
+.spark{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:0 .75rem;margin-top:.5rem}
+.spark .label{grid-column:1 / -1}
+.spark svg{width:7.5rem;height:1.75rem;overflow:visible}
+.spark polyline{fill:none;stroke:var(--data);stroke-width:1.5;stroke-linejoin:round}
+.spark circle{fill:var(--data)}
+.spark .val{color:var(--muted);font-size:13px}
+.spark.wide{grid-template-columns:1fr auto}
+.spark.wide svg{width:100%;height:2rem}
 </style>
 {% if token %}<script src="/static/pinkas.js" defer></script>{% endif %}
 </head>
 <body>
 <header><p class="brand"><a href="/">pinkas</a></p>{% if token %}
 <form class="search" method="get" action="/search" role="search"><input type="search" name="q" value="{{ q or '' }}" placeholder="Find an item (Ctrl+K)" aria-label="Find an item"></form>
-<nav><a href="/guide">guide</a><a href="/settings">settings</a></nav>
+<nav><a href="/guide">guide</a><a href="/stats">stats</a><a href="/settings">settings</a></nav>
 <form class="logout" method="post" action="/logout"><input type="hidden" name="t" value="{{ token }}"><button class="linkish">log out</button></form>{% endif %}</header>
 <main{% block main_class %}{% endblock %}>{% block main %}{% endblock %}</main>
 {% if nerd %}

@@ -8,6 +8,8 @@ household of alts that feed each other materials.
 - **How much rested XP it has built up**, estimated from the time since it logged out.
 - **Who has an item**: one search across every character's bags, bank and mailbox.
 - **Your own plan**, a markdown file shown as a page next to the characters.
+- **How the play went**: hours a day, levels, deaths and their killers, gathering, the materials mailed
+  between alts, gold in and out, dungeon runs and combat by level, as charts drawn by the server.
 
 ## How it works
 

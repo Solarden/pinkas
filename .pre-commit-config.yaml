@@ -23,6 +23,12 @@ repos:
         # The fixtures are the client's own bytes.
         exclude: ^tests/fixtures/
 
+  # Lint only, no `ruff format`.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+
   # The luacheck on PATH (`brew install luacheck`): the hook in luacheck's own repo needs luarocks.
   - repo: local
     hooks:

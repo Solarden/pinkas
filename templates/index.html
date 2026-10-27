@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% from "macros.html" import stats, prof %}
 {% block main %}
-<h1 class="sr">Characters</h1>
+<h1>Characters</h1>
 {% if characters %}
 <div class="overview">
 <details class="panel account" open>
@@ -29,11 +29,12 @@
 </div>
 <script type="application/json" id="cards">{{ cards|tojson }}</script>
 
+<h2 class="sr">Every character</h2>
 <div class="chars">
 {% for c in characters %}
 <article class="panel char{% if c.playing %} playing{% endif %}" id="c{{ c.id }}">
 <div class="top">
-<div class="who"><h2 class="cname"><a class="name" href="/c/{{ c.realm|pathpart }}/{{ c.name|pathpart }}">{{ c.name }}</a></h2>{% if c.playing %}<span class="pill now">playing</span>{% elif c.id == next_up %}<span class="pill pos">next up</span>{% endif %}<span class="sub">{{ c.level if c.level is not none else "?" }} {{ (c.class or "")|title }} · {{ c.realm }}{% if c.role %} · {{ c.role }}{% endif %}</span></div>
+<div class="who"><h3 class="cname"><a class="name" href="/c/{{ c.realm|pathpart }}/{{ c.name|pathpart }}">{{ c.name }}</a></h3>{% if c.playing %}<span class="pill pos">playing</span>{% elif c.id == next_up %}<span class="pill muted">next up</span>{% endif %}<span class="sub">{{ c.level if c.level is not none else "?" }} {{ (c.class or "")|title }} · {{ c.realm }}{% if c.role %} · {{ c.role }}{% endif %}</span></div>
 <form method="post" action="/playing"><input type="hidden" name="t" value="{{ token }}"><input type="hidden" name="character" value="{% if not c.playing %}{{ c.id }}{% endif %}"><button class="quiet" aria-label="{{ 'Stop playing' if c.playing else 'Play' }} {{ c.name }}">{{ "Stop" if c.playing else "Play" }}</button></form>
 </div>
 <div class="facts">
