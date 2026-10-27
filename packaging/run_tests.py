@@ -15,7 +15,10 @@ from pathlib import Path
 
 import psycopg2
 
-from pinkas import postgres
+# The project isn't installed (package = false), and a script's own folder is the only one Python adds.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from pinkas import postgres  # noqa: E402
 
 base = Path(tempfile.mkdtemp(prefix="pinkas-tests-"))
 server = postgres.start(base)

@@ -51,6 +51,8 @@ def app(version: str) -> None:
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--windowed", "--name", "pinkas",
         "--distpath", str(WORK / "dist"), "--workpath", str(WORK / "work"), "--specpath", str(WORK),
         "--version-file", str(WORK / "version.txt"),
+        # pinkas isn't installed (package = false): main.py's import is found from here, whatever the folder.
+        "--paths", str(ROOT),
         # Only Postgres 18: the package's Postgres 16 would add 40 MB the app never runs.
         "--collect-submodules", "pixeltable_pgserver",
         "--add-data", f"{postgres};pixeltable_pgserver/pginstall18",

@@ -787,6 +787,8 @@ def test_a_failure_after_the_database_started_says_so_and_stops_it(tmp_path, mon
     monkeypatch.setattr(sys, "argv", ["pinkas.exe"])
     monkeypatch.setattr(sys, "stdout", sys.stdout)
     monkeypatch.setattr(sys, "stderr", sys.stderr)
+    # GitHub's Windows runners are administrators.
+    monkeypatch.setattr(desktop.postgres, "is_elevated", lambda: False)
     monkeypatch.setattr(desktop.postgres, "start", lambda base: postgres.Server(1, "app", "owner"))
     monkeypatch.setattr(desktop.postgres, "stop", stopped.append)
     monkeypatch.setattr(desktop, "migrate", lambda dsn: (_ for _ in ()).throw(RuntimeError("no migration")))
