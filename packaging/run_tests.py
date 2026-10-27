@@ -1,5 +1,6 @@
 """The test suite on Windows, against the app's own Postgres instead of docker-compose.test.yml.
 
+    uv run --no-project --python 3.14 python packaging/winpthread.py
     uv run python packaging/run_tests.py [pytest arguments]
 
 The release build runs it before it packages anything; the pull's Unix-only tests skip themselves.
@@ -15,8 +16,11 @@ from pathlib import Path
 
 import psycopg2
 
+ROOT = Path(__file__).resolve().parent.parent
 # The project isn't installed (package = false), and a script's own folder is the only one Python adds.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(ROOT))
+# The package's postgres.exe links libwinpthread-1.dll without shipping it; the build copies it in beside it.
+os.environ["PATH"] = f"{ROOT / 'build' / 'dlls'}{os.pathsep}{os.environ['PATH']}"
 
 from pinkas import postgres  # noqa: E402
 
