@@ -28,6 +28,7 @@ read_globals = {
   "ClickSendMailItemButton",
   "CreateFrame",
   "Enum",
+  "GetBuildInfo",
   "GetInboxHeaderInfo",
   "GetInboxItem",
   "GetInboxNumItems",

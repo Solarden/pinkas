@@ -36,6 +36,7 @@ def test_the_beta_file_lands(conn, owner):
     with owner.cursor() as cur:
         (data,) = rows(cur, "SELECT data FROM pinkas_snapshots")[0]
         assert data["bags"][0]["name"] == "Hearthstone" and "events" not in data
+        assert data["export"] == {"v": 2, "build": "1.60.1.70450", "routes": {}}
 
 
 def test_the_same_file_twice_is_a_no_op(conn, owner):
