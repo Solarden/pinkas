@@ -6,7 +6,7 @@ import pytest
 from pinkas.ingest import ingest
 from pinkas.parse import ParseError
 from tests.db import migrate
-from tests.files import KEY, account, fixture, with_export
+from tests.files import KEY, account, account_v3, fixture, with_export
 
 FETCHED = datetime(2026, 10, 21, 10, 30, tzinfo=UTC)
 
@@ -39,6 +39,25 @@ def test_the_beta_file_lands(conn, owner):
         assert data["export"] == {"v": 2, "build": "1.60.1.70450", "routes": {}}
 
 
+def test_a_v3_file_after_a_v2_one_stores_quality_class_and_slots(conn, owner):
+    ingest(conn, fixture("fake_account.lua"), FETCHED)
+    export = account_v3()
+    export["exported_at"] += 600
+    char = export["chars"][KEY]
+    char["logout_at"] += 600
+    char["bank"] = {"as_of": 1792570990, "slots": 28, "items": [char["bags"][0]]}
+
+    assert ingest(conn, with_export(export), FETCHED)["snapshots"] == 1
+
+    with owner.cursor() as cur:
+        (data,) = rows(cur, "SELECT data FROM pinkas_snapshots ORDER BY logout_at DESC LIMIT 1")[0]
+
+        assert (data["bag_slots"], data["bank"]["slots"], data["export"]["v"]) == (80, 28, 3)
+        assert data["bags"][0] == data["bank"]["items"][0] == {
+            "id": 6948, "name": "Hearthstone", "count": 1, "quality": 1, "class": 7, "subclass": 5,
+        }
+
+
 def test_the_same_file_twice_is_a_no_op(conn, owner):
     ingest(conn, fixture("fake_account.lua"), FETCHED)
 
@@ -55,6 +74,40 @@ def test_a_new_logout_adds_one_snapshot(conn):
         c["logout_at"] += 600
 
     assert ingest(conn, export_with(relog), FETCHED)["snapshots"] == 1
+
+
+def test_a_null_bank_and_mailbox_carry_the_last_capture(conn, owner):
+    bank = {"as_of": 1792539000, "items": [{"id": 2318, "name": "Light Leather", "count": 4}]}
+    mailbox = {"as_of": 1792539100, "mails": []}
+
+    def visited(e, c):
+        c.update(bank=bank, mailbox=mailbox)
+
+    def relog(minutes, **containers):
+        def edit(e, c):
+            e["exported_at"] += minutes * 60
+            c["logout_at"] += minutes * 60
+            c.update(containers)
+
+        return edit
+
+    newer = {"as_of": 1792545000, "items": []}
+    ingest(conn, export_with(visited), FETCHED)
+    ingest(conn, export_with(relog(10)), FETCHED)
+    ingest(conn, export_with(relog(20)), FETCHED)
+    ingest(conn, export_with(relog(30, bank=newer)), FETCHED)
+
+    with owner.cursor() as cur:
+        stored = rows(cur, "SELECT data->'bank', data->'mailbox' FROM pinkas_snapshots ORDER BY logout_at")
+
+    assert stored == [(bank, mailbox), (bank, mailbox), (bank, mailbox), (newer, mailbox)]
+
+
+def test_a_first_snapshot_without_a_bank_stays_without(conn, owner):
+    ingest(conn, fixture("fake_account.lua"), FETCHED)
+
+    with owner.cursor() as cur:
+        assert rows(cur, "SELECT data->'bank', data->'mailbox' FROM pinkas_snapshots") == [(None, None)]
 
 
 def test_a_bad_file_writes_nothing(conn, owner):

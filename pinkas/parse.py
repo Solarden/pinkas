@@ -96,7 +96,11 @@ def nullable(spec):
     return ("null", spec)
 
 
-ITEM = {"id": INT, "name": nullable(STR), "count": INT}
+# An item cached by an older addon, or one read from mail, has no quality or class: those are null.
+ITEM = {
+    "id": INT, "name": nullable(STR), "count": INT,
+    "quality": nullable(INT), "class": nullable(INT), "subclass": nullable(INT),
+}
 CHARACTER = {
     "name": STR, "realm": STR, "class": nullable(STR), "race": nullable(STR),
     "level": nullable(INT), "xp": nullable(INT), "xp_max": nullable(INT), "rested": nullable(INT),
@@ -104,12 +108,20 @@ CHARACTER = {
     "x": nullable(NUM), "y": nullable(NUM), "session_started_at": nullable(INT),
     "logout_at": nullable(INT), "played": nullable({"total": INT, "level": INT, "at": INT}),
     "professions": [{"skill_line": nullable(INT), "name": nullable(STR), "rank": nullable(INT), "max": nullable(INT)}],
-    "bags": [ITEM],
-    "bank": nullable({"as_of": INT, "items": [ITEM]}),
+    "bags": [ITEM], "bag_slots": nullable(INT),
+    "bank": nullable({"as_of": INT, "slots": nullable(INT), "items": [ITEM]}),
     "mailbox": nullable({"as_of": INT, "mails": [{"from": STR, "money": INT, "items": [ITEM]}]}),
     "events": [{"id": INT, "at": INT, "kind": ("enum", EVENT_KINDS), "value": OBJ}],
     "totals": [{"session": INT, "kind": ("enum", TOTAL_KINDS), "key": STR, "value": OBJ}],
 }
+ITEM_V2 = {"id": INT, "name": nullable(STR), "count": INT}
+CHARACTER_V2 = {k: v for k, v in CHARACTER.items() if k != "bag_slots"} | {
+    "bags": [ITEM_V2],
+    "bank": nullable({"as_of": INT, "items": [ITEM_V2]}),
+    "mailbox": nullable({"as_of": INT, "mails": [{"from": STR, "money": INT, "items": [ITEM_V2]}]}),
+}
+# Contract version -> character spec. Files written before an addon update still arrive.
+CHARACTERS = {2: CHARACTER_V2, 3: CHARACTER}
 
 
 def check(value, spec, path: str) -> None:
@@ -171,7 +183,8 @@ def parse(body: bytes) -> dict:
         raise ParseError("the export is nested too deeply") from None
 
     check(export, {"v": INT, "exported_at": INT, "build": STR, "routes": OBJ, "chars": OBJ}, "export")
-    if export["v"] != 2:
+
+    if export["v"] not in CHARACTERS:
         raise ParseError("export.v: an unknown contract version")
 
     for i, (kind, recipient) in enumerate(export["routes"].items()):
@@ -182,7 +195,8 @@ def parse(body: bytes) -> dict:
 
     # Characters are addressed by position: their keys are names.
     for i, (key, char) in enumerate(export["chars"].items()):
-        check(char, CHARACTER, f"chars[{i}]")
+        check(char, CHARACTERS[export["v"]], f"chars[{i}]")
+
         if key != f"{char['realm']}/{char['name']}":
             raise ParseError(f"chars[{i}]: the key is not realm/name")
 

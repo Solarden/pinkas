@@ -9,6 +9,9 @@ from pinkas.parse import ParseError, parse
 
 # These have tables of their own; copying them into every snapshot would repeat up to 500 events.
 NOT_IN_SNAPSHOT = ("events", "totals")
+# A rebuilt or reinstalled addon entry exports these as null until the next visit; the last capture,
+# with its own "as of", is still the best answer, so each is carried from the previous snapshot.
+CARRIED = ("bank", "mailbox")
 # The export's account-wide fields, kept with each snapshot as "export": the page reads the routes,
 # version and build from the newest one, and raw files are purged after 30 days.
 EXPORT_IN_SNAPSHOT = ("v", "build", "routes")
@@ -68,14 +71,24 @@ def ingest(conn, body: bytes, fetched_at: datetime) -> dict:
                 "SELECT id FROM pinkas_characters WHERE realm = %s AND name = %s", (char["realm"], char["name"])
             )
             character_id = cur.fetchone()[0]
+            snapshot = {k: v for k, v in char.items() if k not in NOT_IN_SNAPSHOT}
+            logout_at = ts(char["logout_at"])
+
+            if any(snapshot[k] is None for k in CARRIED):
+                cur.execute(
+                    f"SELECT {', '.join(['data->%s'] * len(CARRIED))} FROM pinkas_snapshots"
+                    " WHERE character_id = %s AND logout_at < %s ORDER BY logout_at DESC LIMIT 1",
+                    (*CARRIED, character_id, logout_at),
+                )
+
+                for k, previous in zip(CARRIED, cur.fetchone() or (None,) * len(CARRIED), strict=True):
+                    if snapshot[k] is None:
+                        snapshot[k] = previous
+
             cur.execute(
                 "INSERT INTO pinkas_snapshots (character_id, logout_at, session_started_at, data, file_id)"
                 " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (
-                    character_id, ts(char["logout_at"]), ts(char["session_started_at"]),
-                    Json({**{k: v for k, v in char.items() if k not in NOT_IN_SNAPSHOT}, "export": account}),
-                    file_id,
-                ),
+                (character_id, logout_at, ts(char["session_started_at"]), Json({**snapshot, "export": account}), file_id),
             )
             counts["snapshots"] += cur.rowcount
 

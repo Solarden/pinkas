@@ -14,7 +14,14 @@ end
 local function items(list)
   local out = array()
   for i, it in ipairs(list or {}) do
-    out[i] = { id = it.id, name = orNull(it.name), count = it.count }
+    out[i] = {
+      id = it.id,
+      name = orNull(it.name),
+      count = it.count,
+      quality = orNull(it.quality),
+      class = orNull(it.class),
+      subclass = orNull(it.subclass),
+    }
   end
 
   return out
@@ -25,7 +32,7 @@ local function container(c)
     return NULL
   end
 
-  return { as_of = c.as_of, items = items(c.items) }
+  return { as_of = c.as_of, slots = orNull(c.slots), items = items(c.items) }
 end
 
 local function mailbox(m)
@@ -118,6 +125,7 @@ local function character(c)
     played = played,
     professions = professions(c.professions),
     bags = items(c.bags),
+    bag_slots = orNull(c.bag_slots),
     bank = container(c.bank),
     mailbox = mailbox(c.mailbox),
     events = events(c.events),

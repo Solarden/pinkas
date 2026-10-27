@@ -6,6 +6,8 @@ household of alts that feed each other materials.
 - **What each character holds:** bags, bank, mailbox and gold, as of its last logout.
 - **How far its professions are**, against the targets you set.
 - **How much rested XP it has built up**, estimated from the time since it logged out.
+- **Who has an item**: one search across every character's bags, bank and mailbox.
+- **Your own plan**, a markdown file shown as a page next to the characters.
 
 ## How it works
 

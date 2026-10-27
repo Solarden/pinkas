@@ -1,7 +1,7 @@
 import pytest
 
 from pinkas.parse import MAX_BYTES, ParseError, parse, unescape_lua_string
-from tests.files import KEY, account, fixture, with_export
+from tests.files import KEY, account, account_v3, fixture, with_export
 
 
 def test_the_beta_file_parses():
@@ -9,9 +9,16 @@ def test_the_beta_file_parses():
     char = export["chars"][KEY]
 
     assert (export["v"], export["build"], export["routes"]) == (2, "1.60.1.70450", {})
-    assert (char["class"], char["level"], char["xp_max"]) == ("SHAMAN", 10, 7600)
+    assert (char["class"], char["level"], char["xp_max"]) == ("ROGUE", 10, 7600)
     assert char["bags"][0] == {"id": 6948, "name": "Hearthstone", "count": 1}
     assert char["bank"] is None and char["events"] == []
+
+
+def test_a_v3_export_parses_with_quality_class_and_slots():
+    char = parse(with_export(account_v3()))["chars"][KEY]
+
+    assert char["bags"][0] == {"id": 6948, "name": "Hearthstone", "count": 1, "quality": 1, "class": 7, "subclass": 5}
+    assert char["bag_slots"] == 80
 
 
 @pytest.mark.parametrize("name", ["fake_nonascii.lua", "fake_nonascii_ddd.lua"], ids=["raw UTF-8", "ddd escapes"])
@@ -88,6 +95,35 @@ def changed(edit) -> bytes:
 def test_the_contract_is_enforced(edit, message):
     with pytest.raises(ParseError, match=message):
         parse(changed(edit))
+
+
+def changed_v3(edit) -> bytes:
+    export = account_v3()
+    edit(export, export["chars"][KEY])
+
+    return with_export(export)
+
+
+@pytest.mark.parametrize(
+    ("edit", "message"),
+    [
+        (lambda e, c: e.update(v=4), "contract version"),
+        (lambda e, c: c.pop("bag_slots"), r"chars\[0\]: the keys differ"),
+        (lambda e, c: c["bags"][0].pop("quality"), r"chars\[0\]\.bags\[0\]: the keys differ"),
+        (lambda e, c: c["bags"][0].update(quality="1"), r"chars\[0\]\.bags\[0\]\.quality: expected int"),
+        (lambda e, c: c.update(bank={"as_of": 1, "items": []}), r"chars\[0\]\.bank: the keys differ"),
+        (lambda e, c: c.update(bag_slots=80.5), r"chars\[0\]\.bag_slots: expected int"),
+    ],
+    ids=["future version", "no bag slots", "v2 item", "string quality", "v2 bank", "float slots"],
+)
+def test_the_v3_contract_is_enforced(edit, message):
+    with pytest.raises(ParseError, match=message):
+        parse(changed_v3(edit))
+
+
+def test_a_v2_export_refuses_v3_fields():
+    with pytest.raises(ParseError, match=r"chars\[0\]: the keys differ"):
+        parse(changed(lambda e, c: c.update(bag_slots=80)))
 
 
 def test_null_is_allowed_where_the_contract_allows_it():

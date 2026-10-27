@@ -3,9 +3,9 @@ local addonName, ns = ...
 ns.NAME = addonName
 -- Two versions: the saved data's own layout, and the export contract the pull parses.
 ns.DB_VERSION = 1
-ns.EXPORT_VERSION = 2
+ns.EXPORT_VERSION = 3
 -- Each event is in the file twice (the cache and the export): a full 8-character account at 500
--- measures 2.9 MB against the pull's 5 MB cap (addon_test.lua).
+-- measures 3.7 MB against the pull's 5 MB cap (addon_test.lua).
 ns.EVENT_CAP = 500
 ns.FAULT_CAP = 20
 -- Totals of older sessions have been pulled long before; keeping them only bloats the file.

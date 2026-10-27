@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% from "macros.html" import name %}
+{% block title %}{{ q ~ " — " if q }}search — pinkas{% endblock %}
+{% block main %}
+<h1 class="sr">Search{% if q %}: {{ q }}{% endif %}</h1>
+{% if results is none %}<p class="muted note">Search every character's bags, bank and mailbox. Counts are from each character's last logout.</p>
+{% elif results %}
+<div class="found-list">
+{% for item in results %}
+<section class="panel found">
+<h2>{{ name(item) }}<span class="sr">: </span><span class="count">{{ item.total }}</span></h2>
+<ul class="plain">{% for w in item.characters %}
+<li><a class="n" href="/c/{{ w.realm|pathpart }}/{{ w.name|pathpart }}">{{ w.name }}</a><span class="muted">{% for box in ("bags", "bank", "mailbox") if w[box] %}{{ box }} {{ w[box] }}{% if not loop.last %} · {% endif %}{% endfor %}</span></li>{% endfor %}
+</ul>
+</section>
+{% endfor %}
+</div>
+{% else %}
+<p class="muted note">Nothing called “{{ q }}”. Items the game hadn't named yet show as “item &lt;id&gt;” on the character's page.</p>
+{% endif %}
+{% endblock %}
