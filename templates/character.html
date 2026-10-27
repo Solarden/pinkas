@@ -30,7 +30,7 @@
 {% for p in planned %}<div class="prof"><span class="n">{{ p.name }}</span><span class="note">planned, not learned · up to {{ p.upto }}</span></div>{% endfor %}
 {% if c.professions|selectattr("secondary")|list %}<h2 class="sub">Secondary</h2>
 {% for p in c.professions|selectattr("secondary") %}{{ prof(p, c.name) }}{% endfor %}{% endif %}
-<p class="muted note set"><a href="/settings">Set targets</a></p>
+<p class="muted note set"><a href="/settings/characters">Set targets</a></p>
 </section>
 
 <section class="panel">

@@ -16,7 +16,7 @@ def _dsn() -> str:
     env_file = os.environ.get("PINKAS_ENV")
     if not env_file:
         raise SystemExit("set MIGRATE_DATABASE_URL, or PINKAS_ENV to the env file holding it")
-    for line in Path(env_file).read_text().splitlines():
+    for line in Path(env_file).read_text(encoding="utf-8").splitlines():
         key, sep, value = line.strip().partition("=")
         if sep and key.strip() == "MIGRATE_DATABASE_URL":
             return value.strip().strip('"').strip("'")

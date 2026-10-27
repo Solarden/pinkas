@@ -1,5 +1,6 @@
 import shlex
 import socket
+import sys
 from datetime import UTC, datetime, timedelta
 
 import psycopg2
@@ -11,6 +12,8 @@ from tests.db import DSN
 from tests.files import FIXTURES, KEY, account, fixture, with_export
 
 GOOD = f"cat {shlex.quote(str(FIXTURES / 'fake_account.lua'))}"
+# The pull runs on the server: it reads its source with select() on a pipe, and its sources are Unix commands.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the server's pull is Unix-only")
 
 
 class Log(list):

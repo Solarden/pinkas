@@ -135,6 +135,43 @@
     });
   }
 
+  // A message after a save: focused, so a screen reader reads it on the new page.
+  var flash = document.getElementById("flash");
+  if (flash) flash.focus();
+
+  // The guide editor: TinyMDE (static/vendor) formats the textarea's text in place; this toolbar drives it,
+  // with real buttons, since the library's own are divs a keyboard can't reach. Without the script, the textarea.
+  var guide = document.getElementById("guide-text");
+  var formatting = document.querySelector(".editor .tools");
+  if (guide && formatting && window.TinyMDE) {
+    var editor = new window.TinyMDE.Editor({ textarea: guide });
+    editor.e.setAttribute("role", "textbox");
+    editor.e.setAttribute("aria-multiline", "true");
+    editor.e.setAttribute("aria-labelledby", "guide-label");
+    editor.e.setAttribute("aria-describedby", "guide-help");
+    // The label's `for` names the hidden textarea; a click on it goes to the editor instead.
+    document.getElementById("guide-label").addEventListener("click", function () {
+      editor.e.focus();
+    });
+    var state = {};
+    editor.addEventListener("selection", function (e) {
+      state = e.commandState || {};
+      formatting.querySelectorAll("[aria-pressed]").forEach(function (b) {
+        b.setAttribute("aria-pressed", String(state[b.dataset.cmd] === true));
+      });
+    });
+    formatting.addEventListener("click", function (e) {
+      var button = e.target.closest("button");
+      if (!button) return;
+      editor.e.focus();
+      editor.restoreLastSelection();
+      // A link is no editor command: the library's own toolbar wraps the selection the same way.
+      if (button.dataset.cmd === "insertLink") editor.wrapSelection("[", "]()");
+      else editor.setCommandState(button.dataset.cmd, state[button.dataset.cmd] !== true);
+    });
+    formatting.hidden = false;
+  }
+
   var tools = document.getElementById("card-tools");
   var grid = document.querySelector(".chars");
   var source = document.getElementById("cards");

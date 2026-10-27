@@ -330,7 +330,8 @@ def test_an_unknown_page_is_404(logged_in, conn, path):
 def test_the_nerd_panel_shows_after_login(logged_in, conn):
     ingest(conn, fixture("fake_account.lua"), FETCHED)
     index, character, missing, *others = (
-        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide", "/settings", "/stats")
+        logged_in.get(p) for p in ("/", "/c/Testrealm/Fakechar", "/nothing", "/search?q=leather", "/guide",
+                                   "/settings/routes", "/settings/characters", "/guide/edit", "/stats")
     )
 
     for response in (index, character, missing, *others):
@@ -351,8 +352,8 @@ def test_the_nerd_panel_is_never_shown_before_login(client, conn):
         client.post("/logout", {"t": "wrong"}),
         client.get("/search?q=leather"),
         client.get("/guide"),
-        client.get("/settings"),
-        client.post("/settings", {"t": TOKEN, "character": "1", "rank": "0"}),
+        client.get("/settings/characters"),
+        client.post("/settings/characters", {"t": TOKEN, "character": "1", "rank": "0"}),
     ]
 
     for response in responses:
@@ -393,13 +394,13 @@ def test_game_strings_stay_inert(logged_in, conn, owner, tmp_path):
         cur.execute("UPDATE pinkas_characters SET role = %s", (XSS,))
 
     guide = tmp_path / "guide.md"
-    guide.write_text(f"# Plan\n\n{XSS}\n\n<div>{XSS}</div>\n\ninline <b>bold</b> {XSS}\n")
+    guide.write_text(f"# Plan\n\n{XSS}\n\n<div>{XSS}</div>\n\ninline <b>bold</b> {XSS}\n", encoding="utf-8")
     logged_in.server.conf = CONF._replace(guide=str(guide))
 
     index = logged_in.get("/").body
     character = logged_in.get(f"/c/Testrealm/{quote(XSS, safe='')}").body
     search = logged_in.get("/search?" + urlencode({"q": XSS})).body
-    settings = logged_in.get("/settings").body
+    settings = logged_in.get("/settings/characters").body
     handbook = logged_in.get("/guide").body
     charts = logged_in.get("/stats?range=all").body
 
@@ -618,8 +619,10 @@ def test_search_finds_a_non_ascii_name(logged_in, conn):
 # Guide --------------------------------------------------------------------------------------------
 
 
-def test_no_guide_set_says_so(logged_in):
-    assert "No guide set" in logged_in.get("/guide").body
+def test_without_a_guide_file_the_guide_is_written_in_the_app(logged_in):
+    body = logged_in.get("/guide").body
+
+    assert "No guide yet" in body and 'href="/guide/edit"' in body
 
 
 def test_an_unreadable_guide_names_only_the_class(logged_in, tmp_path, capsys):
@@ -647,7 +650,7 @@ def test_the_guide_renders_markdown_without_unsafe_links(logged_in, tmp_path):
 
 def test_only_the_guide_is_inserted_unescaped():
     templates = Path(web.TEMPLATES.loader.searchpath[0]).glob("*.html")
-    uses = {path.name: path.read_text().count("|safe") for path in templates}
+    uses = {path.name: path.read_text(encoding="utf-8").count("|safe") for path in templates}
 
     assert {name: count for name, count in uses.items() if count} == {"_guide.html": 1}
 
@@ -681,13 +684,13 @@ def test_settings_save_every_owner_field(logged_in, conn, owner):
     store(conn, with_alt(professions=[{"skill_line": 197, "name": "Tailoring", "rank": 1, "max": 75}]))
     logged_in.post("/playing", {"t": TOKEN, "character": ids(owner)["Fakechar"]})
     form = settings_form(owner, role=" main ", sort="-3", rank="4", **{"target-393": "225", "target-197": "300"})
-    response = logged_in.post("/settings", form)
+    response = logged_in.post("/settings/characters", form)
 
-    assert response.status == 303 and response.headers["Location"] == "/settings"
+    assert response.status == 303 and response.headers["Location"] == "/settings/characters?done=saved"
     assert character_row(owner) == ("main", -3, 4, False, True)
     assert targets(owner) == [(197, 150), (197, 225), (197, 300), (393, 150), (393, 225)], "Tailoring is planned"
 
-    logged_in.post("/settings", settings_form(owner, archived="on", **{"target-393": ""}))
+    logged_in.post("/settings/characters", settings_form(owner, archived="on", **{"target-393": ""}))
 
     assert character_row(owner) == (None, None, 0, True, False), "archiving ends playing"
     assert targets(owner) == [(197, 150), (197, 225), (197, 300)], "a skill line the form left out keeps its rows"
@@ -711,7 +714,7 @@ def test_settings_save_every_owner_field(logged_in, conn, owner):
 )
 def test_settings_refuse_a_bad_value_and_write_nothing(logged_in, conn, owner, fields):
     store(conn, account())
-    response = logged_in.post("/settings", settings_form(owner, role="main", **{"target-393": "150"}) | fields)
+    response = logged_in.post("/settings/characters", settings_form(owner, role="main", **{"target-393": "150"}) | fields)
 
     assert response.status == 400
     assert character_row(owner) == (None, None, 0, False, False) and targets(owner) == []
@@ -730,7 +733,7 @@ def test_settings_list_learned_professions_first_and_archived_characters_last(lo
     with owner.cursor() as cur:
         cur.execute("UPDATE pinkas_characters SET archived_at = now() WHERE name = 'Fakechar'")
 
-    body = logged_in.get("/settings").body
+    body = logged_in.get("/settings/characters").body
     altchar, fakechar = body.split("Altchar · Testrealm")[1].split("Fakechar · Testrealm")
 
     assert altchar.index("Tailoring") < altchar.index("Other professions") < altchar.index("Skinning")
@@ -750,7 +753,7 @@ def test_targets_show_as_progress_bars(logged_in, conn, owner, upto, shown):
     store(conn, account())
 
     if upto is not None:
-        logged_in.post("/settings", settings_form(owner, **{"target-393": upto}))
+        logged_in.post("/settings/characters", settings_form(owner, **{"target-393": upto}))
 
     for page in ("/", "/c/Testrealm/Fakechar"):
         assert shown in logged_in.get(page).body
@@ -779,12 +782,12 @@ def test_a_target_for_a_profession_no_snapshot_names_stays_visible_and_clearable
         cur.execute("INSERT INTO pinkas_targets (character_id, skill_line, skill) VALUES (%s, 999, 150)",
                     (ids(owner)["Fakechar"],))
 
-    settings = logged_in.get("/settings").body
+    settings = logged_in.get("/settings/characters").body
     character = logged_in.get("/c/Testrealm/Fakechar").body
 
     assert settings.index("Skinning") < settings.index("profession 999")
     assert '<span class="n">profession 999</span><span class="note">planned, not learned · up to 150' in character
-    assert logged_in.post("/settings", settings_form(owner, **{"target-999": ""})).status == 303
+    assert logged_in.post("/settings/characters", settings_form(owner, **{"target-999": ""})).status == 303
     assert targets(owner) == []
 
 
@@ -906,12 +909,14 @@ def test_the_only_script_is_the_apps_own_file(logged_in, conn):
     assert script.body == (web.ROOT / "static" / "pinkas.js").read_text(encoding="utf-8")
     assert script.headers["Content-Security-Policy"].startswith("default-src 'none'; script-src 'self';")
 
-    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing"):
+    for path in ("/", "/c/Testrealm/Fakechar", "/search?q=linen", "/settings/routes", "/settings/characters",
+                 "/guide/edit", "/guide", "/stats", "/nothing"):
         tags = re.findall(r"<script[^>]*>", logged_in.get(path).body)
 
         assert '<script src="/static/pinkas.js" defer>' in tags
         assert set(tags) <= {
             '<script src="/static/pinkas.js" defer>', '<script type="application/json" id="cards">',
+            '<script src="/static/tiny-mde.js" defer>',
             '<script type="application/json" id="charts">',
         }
 
@@ -931,7 +936,8 @@ def test_the_script_is_revalidated_while_pages_are_never_stored(logged_in, conn)
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings", "/guide", "/stats", "/nothing", "/login"]
+    "path", ["/", "/c/Testrealm/Fakechar", "/search", "/search?q=linen", "/settings/routes", "/settings/characters",
+             "/guide/edit", "/guide", "/stats", "/nothing", "/login"]
 )
 def test_every_page_has_one_h1(logged_in, conn, path):
     store(conn, account())

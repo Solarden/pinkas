@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{% block title %}pinkas{% endblock %}</title>
+<title>{% if flash %}{{ flash[1] }} {% endif %}{% block title %}pinkas{% endblock %}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='13' fill='%230f1115'/%3E%3Cpolygon points='10,18 30,22 30,48 10,44' fill='%234f8cff'/%3E%3Cpolygon points='34,22 54,18 54,44 34,48' fill='%234f8cff'/%3E%3C/svg%3E">
 <style>
 /* skin:begin — generated from skin/skin.css in the owner's infra repo; edit it there, then run skin/sync.py --write */
@@ -215,7 +215,7 @@ p.note{margin:0;font-size:13px}.mail p.note{margin:.25rem 0 0}p.note.set{margin-
 .guide th,.guide td{min-width:8ch;padding:.5rem .75rem;vertical-align:top}
 
 /* settings */
-.settings-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,24rem),1fr));gap:var(--gap);align-items:start}
+.settings-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,30rem),1fr));gap:var(--gap);align-items:start}
 .settings .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(7rem,11rem);gap:.5rem;align-items:center}
 /* A field and the next row's label stay 12px apart (Homelab Skin, Field), so a label never reads as the field above's. */
 .settings .row + .row{margin-top:.75rem}
@@ -342,20 +342,92 @@ details.more .count{margin-left:.5rem;font-weight:400}
 .spark .val{color:var(--muted);font-size:13px}
 .spark.wide{grid-template-columns:1fr auto}
 .spark.wide svg{width:100%;height:2rem}
+/* settings tabs, the Windows app's Game tab, the guide editor (P9c, mockups/README.md) */
+code{font-family:var(--mono);font-size:13px}
+p.note{max-width:42rem}
+/* One grid for repeated panels: the card minimum decides how many fit (Homelab Skin, card-min). */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,30rem),1fr));gap:var(--gap);align-items:start}
+.cards > *,.editor > *{min-width:0}
+/* Tabs: links to the three settings pages; the current one says so to screen readers too (aria-current). */
+.tabs{display:flex;flex-wrap:wrap;gap:0 1.5rem;margin:0;padding:0;list-style:none;border-bottom:1px solid var(--line)}
+.tabs a{display:inline-block;padding:.75rem 0;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs a:hover{color:var(--fg)}
+.tabs a[aria-current]{color:var(--fg);font-weight:600;border-bottom-color:var(--fg)}
+/* Name and value pairs: the nerd panel's grid. */
+dl.kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:.25rem .75rem;margin:0 0 .75rem}
+dl.kv dt{color:var(--muted);font-size:13px}
+dl.kv dd{margin:0}
+.path{margin:0 0 .75rem;font-family:var(--mono);font-size:13px}
+.actions{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem 1rem;margin-top:.75rem}
+.actions button{margin:0}
+/* Small links beside 44px buttons get the same height. */
+.actions a{display:inline-flex;align-items:center;min-height:2.75rem}
+.actions + .note{margin-top:.75rem}
+.panel > .flash{margin:0 0 .75rem}
+main > .flash{max-width:42rem}
+.files{width:100%;border-collapse:collapse}
+.files th,.files td{padding:.25rem .75rem .25rem 0;vertical-align:top}
+.files td:first-child{font-family:var(--mono);font-size:13px}
+/* Steps of the first run: done ones say so in a word, as every state. */
+ol.steps{margin:0;padding-left:1.25rem}
+ol.steps li + li{margin-top:.75rem}
+ol.steps .pill{margin-right:.5rem}
+.choice{display:flex;flex-direction:column;gap:.5rem;margin:0 0 .75rem;padding:0;border:0}
+.choice legend{margin-bottom:.5rem;padding:0}
+.choice label{display:flex;align-items:center;gap:.5rem;color:var(--fg);font-size:15px}
+.choice label > span{min-width:0}
+.choice input{flex:0 0 auto;width:1.5rem;height:1.5rem;min-height:0;padding:0;margin:0}
+/* guide editor */
+/* The editor takes the width; from the skin's side breakpoint the help sits beside it, the page's one media query. */
+.edit-grid{display:grid;gap:var(--gap);align-items:start}
+.edit-grid > *{min-width:0}
+@media (min-width:1100px){.edit-grid{grid-template-columns:minmax(0,1fr) 22rem}}
+.edit-help{display:flex;flex-direction:column;gap:var(--gap)}
+.edit-help ul{margin:0;padding-left:1.25rem}
+.edit-help li + li{margin-top:.25rem}
+.edit-help dl.kv{margin:0;gap:.5rem .75rem}
+.editor .label{margin-bottom:.25rem}
+.editor textarea,.TinyMDE{display:block;width:100%;min-height:min(28rem,60vh);padding:.75rem;border:1px solid var(--field-border);border-radius:.375rem;background:var(--bg);color:var(--fg);font-size:15px;line-height:1.5}
+.TinyMDE:focus{border-color:var(--accent);outline:2px solid var(--accent);outline-offset:2px}
+.TinyMDE .TMH2{font-size:1.25rem;font-weight:600}
+.TinyMDE .TMMark{color:var(--muted)}
+.TinyMDE .TMStrong{font-weight:700}
+.TinyMDE .TMLink{color:var(--accent)}
+.TinyMDE .TMBlankLine{height:1.5em}
+.editor .tools{display:flex;flex-wrap:wrap;gap:.5rem;margin:0 0 .5rem}
+.editor .tools button{margin:0}
+/* Pressed shows by a bar, not only by colour. */
+.editor .tools button[aria-pressed="true"]{border-color:var(--accent);background:var(--panel);box-shadow:inset 0 -3px 0 var(--accent)}
+/* A page title with its one action beside it; the link stays outside the heading. */
+.titlebar{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0 1rem}
+.titlebar h1{margin:0}
+.titlebar a{display:inline-flex;align-items:center;min-height:2.75rem}
+/* Routes: one panel across the page, a field per material side by side where they fit. */
+.route-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,13rem),1fr));gap:.75rem var(--gap);margin:0 0 1rem}
+.route-grid > *{min-width:0}
+.route-grid select{width:100%}
+.route-grid .field{margin:0}
+.route-grid dt{color:var(--muted);font-size:13px}
+.route-grid dd{margin:0}
+ol.how{margin:0;padding-left:1.25rem;max-width:42rem}
+ol.how li + li{margin-top:.25rem}
+.route-grid .hint{margin:.25rem 0 0;color:var(--muted);font-size:13px}
+.TinyMDE_empty::before{content:attr(data-placeholder);color:var(--muted);position:absolute;pointer-events:none}
 </style>
+{% block head %}{% endblock %}
 {% if token %}<script src="/static/pinkas.js" defer></script>{% endif %}
 </head>
 <body>
 <header><p class="brand"><a href="/">pinkas</a></p>{% if token %}
 <form class="search" method="get" action="/search" role="search"><input type="search" name="q" value="{{ q or '' }}" placeholder="Find an item (Ctrl+K)" aria-label="Find an item"></form>
-<nav><a href="/guide">guide</a><a href="/stats">stats</a><a href="/settings">settings</a></nav>
-<form class="logout" method="post" action="/logout"><input type="hidden" name="t" value="{{ token }}"><button class="linkish">log out</button></form>{% endif %}</header>
+<nav aria-label="Main"><a href="/guide">guide</a><a href="/stats">stats</a><a href="/settings">settings</a></nav>
+{% if not desktop %}<form class="logout" method="post" action="/logout"><input type="hidden" name="t" value="{{ token }}"><button class="linkish">log out</button></form>{% endif %}{% endif %}</header>
 <main{% block main_class %}{% endblock %}>{% block main %}{% endblock %}</main>
 {% if nerd %}
 <details class="nerd">
 <summary>Stats for nerds</summary>
 <dl>
-<dt>last pull</dt><dd>{% if nerd.status %}{{ nerd.status }} since {{ nerd.since|local }}{% else %}none yet{% endif %}</dd>
+<dt>{{ 'last read' if desktop else 'last pull' }}</dt><dd>{% if nerd.status %}{{ nerd.status }} since {{ nerd.since|local }}{% else %}none yet{% endif %}</dd>
 <dt>newest file</dt><dd>{% if nerd.sha256 %}{{ nerd.sha256 }}, {{ nerd.size }} bytes, fetched {{ nerd.fetched_at|local }}{% else %}none{% endif %}</dd>
 <dt>snapshots</dt><dd>{{ nerd.snapshots }}</dd>
 <dt>events</dt><dd>{{ nerd.events }}</dd>

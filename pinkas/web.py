@@ -8,6 +8,8 @@ PINKAS_PASSWORD_HASH, and optionally PINKAS_LISTEN (host:port, default 127.0.0.1
 PINKAS_GUIDE (a markdown file shown at /guide).
 
 It speaks plain HTTP and expects a TLS proxy in front, the only client that can reach its address.
+The Windows app (pinkas.desktop) serves the same pages through desktop_server: loopback only, its own
+Host header only, and a one-time launch token from its window instead of the password.
 
 Everything shown comes from the game or from the pulled file, so every template is autoescaped and
 the one script is static/pinkas.js, served by the app itself, which sets game text with textContent only.
@@ -24,6 +26,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,14 +49,24 @@ TEMPLATES = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=
 SCRIPT_PATH = "/static/pinkas.js"
 SCRIPT = (ROOT / "static" / "pinkas.js").read_text(encoding="utf-8")
 SCRIPT_ETAG = f'"{hashlib.sha256(SCRIPT.encode()).hexdigest()[:16]}"'
+EDITOR = (ROOT / "static" / "vendor" / "tiny-mde.tiny.js").read_text(encoding="utf-8")
+# Every file the app serves without a session: neither holds data.
+STATIC = {
+    SCRIPT_PATH: (SCRIPT, SCRIPT_ETAG),
+    "/static/tiny-mde.js": (EDITOR, f'"{hashlib.sha256(EDITOR.encode()).hexdigest()[:16]}"'),
+}
 COOKIE = "pinkas"
 COOKIE_MAX_AGE = 30 * 86400
 PLAYING_HOURS = 12
 FORM_LIMIT = 8192
+# The guide editor's cap in UTF-8 bytes, as migration 0004's check.
+GUIDE_LIMIT = 262144
+# Room for the text encoded three times over (%XX): one over the cap comes back in the editor, not lost.
+GUIDE_FORM_LIMIT = 4 * GUIDE_LIMIT
 # The whole string must match: no "//" or scheme means no off-site redirect, and the charset keeps a
 # decoded CR/LF out of the Location header.
 SEGMENT = r"[A-Za-z0-9_.~%-]+"
-NEXT_RE = re.compile(rf"/(?:c/{SEGMENT}/{SEGMENT}|search|guide|stats|settings)?")
+NEXT_RE = re.compile(rf"/(?:c/{SEGMENT}/{SEGMENT}|search|guide|guide/edit|stats|settings(?:/game|/routes|/characters)?)?")
 TARGET_SKILLS = (150, 225, 300)
 # Common (1) is plain text; the word is for screen readers, the colour is in base.html.
 QUALITY_WORDS = {0: "poor", 2: "uncommon", 3: "rare", 4: "epic", 5: "legendary"}
@@ -77,6 +90,26 @@ HEADERS = (
 )
 # Every interface would put the plain-HTTP port on the network, around the proxy.
 WILDCARD_HOSTS = ("", "0.0.0.0", "::", "[::]")
+OWN_WINDOW = "Open pinkas from its own window."
+# What a page says after a POST redirects to it with ?done=<key>: a fixed list, each on the one page its POST
+# redirects to, so no text comes from the URL and no page shows another's message.
+DONE = {
+    "saved": ("/settings/characters", "ok", "Saved."),
+    "chosen": ("/settings/game", "ok", "Game folder saved."),
+    "not-game": ("/settings/game", "error",
+                 "Not saved: that is not a game folder. Choose the one named _classic_ (or _retail_) inside World of Warcraft."),
+    "no-window": ("/settings/game", "error",
+                  "Failed: choosing a folder needs pinkas's own window, which needs Microsoft Edge WebView2."
+                  " Install it from Microsoft, then start pinkas again."),
+    "installed": ("/settings/game", "ok", "Addon {v} installed. Restart the game to load it."),
+    "updated": ("/settings/game", "ok", "Addon updated to {v}. Type /reload in the game to load it."),
+    "failed": ("/settings/game", "error",
+               "Failed: Windows didn't let pinkas write into the game folder. Close the game and try again."),
+    "refused": ("/settings/game", "error",
+                "Not installed: the addon's folder in the game is a link, perhaps made by an addon manager, and pinkas"
+                " won't write through it. Remove the link, then install again."),
+    "guide": ("/guide", "ok", "Guide saved."),
+}
 
 
 class Config(NamedTuple):
@@ -84,6 +117,8 @@ class Config(NamedTuple):
     secret: str
     pw_hash: str
     guide: str = ""
+    # The Windows app: the one Host header it answers; no password, a launch token instead (desktop_server).
+    desktop_host: str = ""
 
 
 def load_config(env) -> Config:
@@ -141,6 +176,10 @@ def session_cookie(conf: Config, now: float) -> str:
     """Signing the password hash too means a new password ends every session."""
     expiry = int(now) + COOKIE_MAX_AGE
     value = f"{expiry}|{sign(conf.secret, f'session|{expiry}|{conf.pw_hash}')}"
+
+    # The app's own window over plain HTTP: no Secure, and the cookie ends with the app, as its secret does.
+    if conf.desktop_host:
+        return f"{COOKIE}={value}; Path=/; HttpOnly; SameSite=Strict"
 
     return f"{COOKIE}={value}; Max-Age={COOKIE_MAX_AGE}; Path=/; Secure; HttpOnly; SameSite=Lax"
 
@@ -548,11 +587,12 @@ def table_open(renderer, tokens, idx, options, env) -> str:
     return f'<div class="table-box" tabindex="0" role="region" aria-label="{escapeHtml(name)}">\n<table>\n'
 
 
-def render_guide(text: str, down: int = 0) -> str:
+def render_guide(text: str, down: int = 0, breaks: bool = False) -> str:
     """Raw HTML in the file becomes text, and markdown-it's link check drops javascript: and data: URLs.
-    `down` moves every heading that many levels down, for a page that has its own h1.
+    `down` moves every heading that many levels down, for a page that has its own h1. `breaks` keeps every line
+    a line, for a guide written in the app's editor rather than as markdown.
     Built per call: sharing one parser across the server's threads is not documented as safe."""
-    md = MarkdownIt("commonmark", {"html": False}).enable("table")
+    md = MarkdownIt("commonmark", {"html": False, "breaks": breaks}).enable("table")
     md.add_render_rule("table_open", table_open)
     md.add_render_rule("table_close", lambda *args: "</table>\n</div>\n")
     tokens = md.parse(text)
@@ -725,8 +765,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_HEAD = do_GET
 
     def do_POST(self) -> None:
+        limit = GUIDE_FORM_LIMIT if urlparse(self.path).path == "/guide/edit" else FORM_LIMIT
+
         # Refused whole, never cut: a form missing a field would save that field as cleared.
-        if self.form_length() > FORM_LIMIT:
+        if self.form_length() > limit:
             return self.send(413, render("error.html", message="Form too large."))
 
         self.respond(post=True)
@@ -737,17 +779,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conf: Config = self.server.conf
         url = urlparse(self.path)
 
+        if conf.desktop_host:
+            # Any other name is a page elsewhere reaching this port through DNS rebinding.
+            if self.headers.get("Host") != conf.desktop_host:
+                return self.send(400, render("error.html", message="Bad request."))
+
+            if url.path == "/start" and not post:
+                return self.start(conf, url)
+
+            if url.path in ("/login", "/logout"):
+                return self.send(404, render("error.html", message="Not found."))
+
         if url.path == "/login":
             return self.login(conf) if post else self.login_page(url)
 
-        # Before the session check: the script holds no data, and a redirect in its place would be refused.
-        if url.path == SCRIPT_PATH and not post:
+        # Before the session check: the scripts hold no data, and a redirect in their place would be refused.
+        if url.path in STATIC and not post:
+            body, etag = STATIC[url.path]
             self.cache_control = "no-cache"
 
-            if self.headers.get("If-None-Match") == SCRIPT_ETAG:
-                return self.send(304, headers=(("ETag", SCRIPT_ETAG),))
+            if self.headers.get("If-None-Match") == etag:
+                return self.send(304, headers=(("ETag", etag),))
 
-            return self.send(200, SCRIPT, (("ETag", SCRIPT_ETAG),), kind="text/javascript")
+            return self.send(200, body, (("ETag", etag),), kind="text/javascript")
 
         if post and url.path == "/logout":
             if not same(self.read_form().get("t", [""])[0], form_token(conf)):
@@ -756,6 +810,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.redirect("/login", ("Set-Cookie", LOGOUT_COOKIE))
 
         if not valid_session(conf, self.headers.get("Cookie"), time.time()):
+            if conf.desktop_host:
+                return self.send(403, render("error.html", message=OWN_WINDOW))
+
             # A POST can't be replayed after login, so it lands on the list instead.
             target = "/" if post else safe_next(url.path)
 
@@ -766,7 +823,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             conn = connect(conf.dsn)
-            ctx = {"token": form_token(conf)}
+            ctx = {"token": form_token(conf), "desktop": bool(conf.desktop_host), "flash": None}
+            done = DONE.get(parse_qs(url.query).get("done", [""])[0])
+
+            if done and not post and done[0] == url.path:
+                ctx["flash"] = done[1:]
 
             if post:
                 self.post(conn, url.path, ctx, cookie)
@@ -784,6 +845,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         finally:
             if conn is not None:
                 conn.close()
+
+    def start(self, conf: Config, url) -> None:
+        """The window's first request: its token, used once, becomes the session cookie."""
+        given = parse_qs(url.query).get("token", [""])[0]
+
+        with self.server.launch_lock:
+            expected = self.server.launch_token
+            valid = expected is not None and same(given, expected)
+
+            if valid:
+                self.server.launch_token = None
+
+        if not valid:
+            return self.send(403, render("error.html", message=OWN_WINDOW))
+
+        self.redirect(self.server.first_page, ("Set-Cookie", session_cookie(conf, time.time())))
 
     def login_page(self, url) -> None:
         target = safe_next(parse_qs(url.query).get("next", ["/"])[0])
@@ -809,12 +886,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def not_found(self, conn, ctx: dict, cookie: tuple[str, str]) -> None:
         self.page(conn, 404, "error.html", ctx, cookie, message="Not found.")
 
-    def guide(self, down: int = 0) -> dict:
-        """The guide's context: the rendered file, or why there is none."""
+    def guide(self, conn, down: int = 0) -> dict:
+        """The guide's context: the file PINKAS_GUIDE names, else the one written in the app's editor."""
         path = self.server.conf.guide
 
         if not path:
-            return {"html": None, "message": "No guide set: PINKAS_GUIDE names a markdown file."}
+            text = saved_guide(conn)
+            html = render_guide(text, down, breaks=True) if text.strip() else None
+
+            return {"html": html, "message": None, "editable": True}
 
         # shortcut: no size cap; the file is the owner's own. Cap it if the path ever comes from elsewhere.
         try:
@@ -823,9 +903,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (OSError, UnicodeDecodeError) as exc:
             print(f"pinkas: guide {type(exc).__name__}", file=sys.stderr, flush=True)
 
-            return {"html": None, "message": "The guide can't be read."}
+            return {"html": None, "message": "The guide can't be read.", "editable": False}
 
-        return {"html": render_guide(text, down), "message": None}
+        return {"html": render_guide(text, down), "message": None, "editable": False}
 
     def get(self, conn, path: str, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
         now = datetime.now(UTC)
@@ -884,13 +964,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.page(conn, 200, "stats.html", ctx, cookie, nerd, v=view)
 
         if path == "/guide":
-            return self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(down=1))
+            return self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(conn, down=1))
+
+        # A file named by PINKAS_GUIDE is edited where it lives.
+        if path == "/guide/edit" and not self.server.conf.guide:
+            return self.page(conn, 200, "guide_edit.html", ctx, cookie, text=saved_guide(conn), error=None)
 
         if path == "/settings":
+            return self.redirect("/settings/game" if self.server.conf.desktop_host else "/settings/routes")
+
+        if path == "/settings/game" and self.server.conf.desktop_host:
+            with conn, conn.cursor() as cur:
+                cur.execute("SELECT EXISTS (SELECT 1 FROM pinkas_characters)")
+                (any_character,) = cur.fetchone()
+
+            app = self.server.app
+            game, addon, files = app.game(), app.addon(), app.files()
+            # The first run's checklist, until a character is read; a folder lost later is the missing state instead.
+            setup = None if any_character else {"game": game, "addon": addon["installed"]}
+            done = ctx["flash"]
+
+            if done and "{v}" in done[1]:
+                ctx["flash"] = (done[0], done[1].format(v=addon["newest"]))
+
+            return self.page(conn, 200, "settings_game.html", ctx, cookie, tab="game", game=game, files=files,
+                             addon=addon, candidates=[] if game else app.candidates(), setup=setup,
+                             missing=app.missing())
+
+        if path == "/settings/routes":
+            with conn, conn.cursor() as cur:
+                nerd = nerd_stats(cur)
+
+            routes = nerd["export"].get("routes", {})
+
+            return self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes",
+                             routes=[(KIND_LABELS[kind], routes.get(kind)) for kind in ROUTE_KINDS])
+
+        if path == "/settings/characters":
             with conn, conn.cursor() as cur:
                 characters = settings_rows(cur)
 
-            return self.page(conn, 200, "settings.html", ctx, cookie, characters=characters, skills=TARGET_SKILLS)
+            return self.page(conn, 200, "settings_characters.html", ctx, cookie, tab="characters",
+                             characters=characters, skills=TARGET_SKILLS)
 
         # Split before unquoting, so a name holding "/" (sent as %2F) stays one segment.
         parts = path.split("/")
@@ -931,7 +1046,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     group["who"] = alts.get(own_name(group["to"])) if group["to"] else None
 
                 return self.page(
-                    conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(down=1),
+                    conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(conn, down=1),
                     bags=bag_groups, bag_slots=slots(data["bags"], data.get("bag_slots")),
                     bank=bank_groups, bank_slots=bank_slots, history=history,
                     raw=json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True),
@@ -943,6 +1058,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         form = self.read_form()
 
         if not same(form.get("t", [""])[0], ctx["token"]):
+            # The guide's text comes back in the editor: an error page would lose it.
+            if path == "/guide/edit" and not self.server.conf.guide:
+                return self.page(conn, 400, "guide_edit.html", ctx, cookie, text=form.get("text", [""])[0],
+                                 error="Not saved: the page was open too long. Press Save guide again.")
+
             return self.page(conn, 400, "error.html", ctx, cookie, message="Stale form: reload and try again.")
 
         if path == "/playing":
@@ -954,13 +1074,90 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             return self.page(conn, 400, "error.html", ctx, cookie, message="Unknown character.")
 
-        if path == "/settings":
+        if path == "/settings/characters":
             if save_settings(conn, form):
-                return self.redirect("/settings", cookie)
+                return self.redirect("/settings/characters?done=saved", cookie)
 
             return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: a value is out of range.")
 
+        if path == "/guide/edit" and not self.server.conf.guide:
+            # Postgres can't store a NUL, and one never belongs in notes.
+            text = form.get("text", [""])[0].replace("\r\n", "\n").replace("\x00", "")
+
+            if len(text.encode()) > GUIDE_LIMIT:
+                return self.page(conn, 413, "guide_edit.html", ctx, cookie, text=text,
+                                 error="Not saved: the guide is over 256 KB. Shorten it, then save again.")
+
+            save_guide(conn, text)
+
+            return self.redirect("/guide?done=guide", cookie)
+
+        if path == "/settings/game" and self.server.conf.desktop_host:
+            app = self.server.app
+
+            if "log" in form:
+                app.open_log()
+
+                return self.redirect("/settings/game", cookie)
+
+            if "choose" in form:
+                outcome = app.choose()
+
+                return self.redirect("/settings/game" + ("" if outcome == "cancelled" else f"?done={outcome}"), cookie)
+
+            pick = form.get("game", [""])[0]
+
+            if pick.isascii() and pick.isdigit() and app.use(int(pick)):
+                return self.redirect("/settings/game?done=chosen", cookie)
+
+            return self.page(conn, 400, "error.html", ctx, cookie, message="Unknown game folder.")
+
+        if path == "/settings/addon" and self.server.conf.desktop_host:
+            outcome = self.server.app.install()
+
+            # A folder gone since the page was shown: the page now says it is missing.
+            return self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), cookie)
+
         self.not_found(conn, ctx, cookie)
+
+
+def saved_guide(conn) -> str:
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT text FROM pinkas_guide")
+        row = cur.fetchone()
+
+    return row[0] if row else ""
+
+
+def save_guide(conn, text: str) -> None:
+    with conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO pinkas_guide (text, updated_at) VALUES (%s, now())"
+            " ON CONFLICT (id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
+            (text,),
+        )
+
+
+def desktop_server(dsn: str, app, first_page: str = "/") -> tuple[http.server.ThreadingHTTPServer, str]:
+    """The Windows app's server on a free loopback port, and the one-time URL its window opens.
+    `app` is pinkas.desktop.App: the game folder, the files read, the addon."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    host = f"127.0.0.1:{server.server_address[1]}"
+    server.conf = Config(dsn, secrets.token_hex(32), "", desktop_host=host)
+    server.app = app
+    server.first_page = first_page
+    server.stats_cache = {}
+    server.launch_lock = threading.Lock()
+
+    return server, launch_url(server)
+
+
+def launch_url(server) -> str:
+    """A new one-time URL for the window, or for the browser standing in for it; the previous token stops working."""
+    with server.launch_lock:
+        server.launch_token = secrets.token_urlsafe(32)
+
+        return f"http://{server.conf.desktop_host}/start?token={server.launch_token}"
 
 
 def main(argv: list[str]) -> int:

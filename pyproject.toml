@@ -20,8 +20,14 @@ dependencies = [
 package = false
 # pydantic's own dependency, at the minor line the server's apt has (Debian trixie: 0.7.0).
 constraint-dependencies = ["annotated-types>=0.7,<0.8"]
+# The Windows app's packages: installed here so the tests cover its launcher; the server never has them.
+default-groups = ["dev", "desktop"]
 
 [dependency-groups]
+desktop = [
+    "pixeltable-pgserver==0.6.0",
+    "pywebview==6.2.1",
+]
 dev = [
     "hypothesis>=6.170.5",
     "pytest>=8",
