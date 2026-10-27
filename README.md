@@ -10,31 +10,45 @@ household of alts that feed each other materials.
 - **Your own plan**, a markdown file shown as a page next to the characters.
 - **How the play went**: hours a day, levels, deaths and their killers, gathering, the materials mailed
   between alts, gold in and out, dungeon runs and combat by level, as charts drawn by the server.
+- **A "Route mats" button** in the game's mail window, which fills a mail with the materials another
+  alt crafts with.
 
 ## How it works
 
-1. **An addon** writes each character's state into its SavedVariables when the character logs out.
-   The same addon fills mails with the materials another alt crafts with.
-2. **A pull script** fetches that file from the gaming PC and stores each new snapshot in Postgres.
-   It never runs the file, it only parses it.
-3. **A small web app** shows all characters at once. It is meant for a home server behind a login.
+1. **An addon** keeps each character's state and writes it into its SavedVariables when you log out
+   or `/reload`.
+2. **A pull script** reads that file and stores each new snapshot in Postgres. It never runs the
+   file, it only parses it.
+3. **A small web app** shows all characters at once, behind a login.
 
-pinkas only reads files the game already writes, the way log uploaders do. It does not write into
-the game or automate play.
+pinkas only reads files the game already writes, the way log uploaders do. It does not automate
+play, and it sends nothing anywhere: your data stays on your own machines.
 
-## Running the page
+## Documentation
 
-```sh
-python3 -m pinkas.web --hash-password   # once: the hash for PINKAS_PASSWORD_HASH
-python3 -m pinkas.web                   # serves on PINKAS_LISTEN, default 127.0.0.1:8094
-```
-
-Both read their settings from the environment (a systemd `EnvironmentFile`, or exported in the
-shell); [.env.example](.env.example) lists them.
+| | |
+|---|---|
+| [The addon](docs/addon.md) | install it, set routes, what it records |
+| [Self-hosting](docs/self-hosting.md) | run the pull and the page on your own server |
+| [Privacy](docs/privacy.md) | what is stored, what never is, and where it goes |
+| [Windows app](docs/windows.md) | **planned:** one installer for players who don't run a server |
 
 ## Status
 
-Early development.
+Built and tested; first real use at the game's launch. The addon was checked in the beta; a few
+things the beta couldn't reach (gathering spell ids, some gold sources) are confirmed in the first
+days of live play.
+
+## Contributing
+
+Issues and pull requests are welcome. Before a pull request, run:
+
+```sh
+lua tests/addon_test.lua                                   # the addon, against stubbed WoW APIs
+docker compose -f docker-compose.test.yml up -d --wait     # once: a throwaway Postgres
+uv run pytest -q                                           # parser, ingest, pull, pages
+pre-commit run --all-files                                 # secrets, StyLua, luacheck, ruff
+```
 
 ## License
 
