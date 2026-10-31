@@ -37,8 +37,10 @@ RELAUNCHED = "--relaunched"
 APP_MUTEX = "pinkas"
 # The release build's check: the pages without a window, the outcome in the log (a relaunched run has no console).
 SELF_TEST = "--self-test"
-# TODO(launch): the live client's registry key may name its folder; these are the installer's defaults.
+# The installer's defaults; registry_roots() adds a game installed elsewhere.
 GAME_ROOTS = (Path(r"C:\Program Files (x86)\World of Warcraft"), Path(r"C:\Program Files\World of Warcraft"))
+# TODO(launch): the key and value come from addon tools' scripts; check them on a live client.
+GAME_KEY = r"SOFTWARE\Blizzard Entertainment\World of Warcraft"
 WEBVIEW2_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 # The addon from the same commit as the parser, so both read the same export contract.
 ADDON_SOURCE = web.ROOT / "addon" / "Pinkas"
@@ -128,6 +130,29 @@ def games(roots) -> list[Path]:
             found += [f for f in sorted(root.glob("_*_")) if is_game(f)]
         except OSError:
             continue
+
+    return found
+
+
+def registry_roots() -> list[Path]:
+    """The folders the game's InstallPath points at, in both registry views. It names one version's folder
+    (`..\\_retail_\\`), so its parent is the root; the path itself covers a value naming the root."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+
+    found = []
+
+    for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, GAME_KEY, 0, winreg.KEY_READ | view) as key:
+                value, _ = winreg.QueryValueEx(key, "InstallPath")
+        except OSError:
+            continue
+
+        if isinstance(value, str) and value.strip():
+            found += [Path(value).parent, Path(value)]
 
     return found
 
@@ -360,7 +385,8 @@ class App:
             return bool(load_settings(self.settings).get("routes_set"))
 
     def candidates(self) -> list[Path]:
-        return games(GAME_ROOTS)
+        # dict.fromkeys: a registry root that is also a default would list its versions twice.
+        return games(dict.fromkeys((*GAME_ROOTS, *registry_roots())))
 
     def detect(self) -> Path | None:
         """The saved folder, else the one installed game, saved; several or none wait for the Game tab."""
