@@ -24,6 +24,7 @@ from pathlib import Path
 import psycopg2
 
 from pinkas import postgres, web
+from pinkas.db import execute
 from pinkas.parse import MAX_BYTES, ROUTE_KINDS
 from pinkas.pull import Failure, purge, store
 
@@ -585,7 +586,7 @@ def open_window(app: App, url: str, fresh_url) -> None:
 def first_page(app: App, dsn: str) -> str:
     """The Game tab until a character has been read; the characters after that."""
     with psycopg2.connect(dsn) as conn, conn.cursor() as cur:
-        cur.execute("SELECT EXISTS (SELECT 1 FROM pinkas_characters)")
+        execute(cur, web.ANY_CHARACTER)
         (any_character,) = cur.fetchone()
 
     conn.close()

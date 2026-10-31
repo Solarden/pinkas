@@ -240,12 +240,7 @@ def parse(body: bytes) -> dict:
     if export["v"] not in CHARACTERS:
         raise ParseError("export.v: an unknown contract version")
 
-    for i, (kind, recipient) in enumerate(export["routes"].items()):
-        if kind not in ROUTE_KINDS:
-            raise ParseError(f"export.routes[{i}]: an unknown kind")
-
-        if not isinstance(recipient, str) or len(recipient) > TEXT_LIMIT:
-            raise ParseError(f"export.routes[{i}]: expected a name")
+    check_routes(export["routes"])
 
     # Characters are checked by position: their keys are names.
     try:
@@ -253,7 +248,22 @@ def parse(body: bytes) -> dict:
     except ValidationError as exc:
         raise refused(exc, "chars") from None
 
-    for i, (key, char) in enumerate(export["chars"].items()):
+    check_keys(export["chars"])
+
+    return export
+
+
+def check_routes(routes: dict) -> None:
+    for i, (kind, recipient) in enumerate(routes.items()):
+        if kind not in ROUTE_KINDS:
+            raise ParseError(f"export.routes[{i}]: an unknown kind")
+
+        if not isinstance(recipient, str) or len(recipient) > TEXT_LIMIT:
+            raise ParseError(f"export.routes[{i}]: expected a name")
+
+
+def check_keys(chars: dict) -> None:
+    for i, (key, char) in enumerate(chars.items()):
         if key != f"{char['realm']}/{char['name']}":
             raise ParseError(f"chars[{i}]: the key is not realm/name")
 
@@ -261,5 +271,3 @@ def parse(body: bytes) -> dict:
         keys = [(t["session"], t["kind"], t["key"]) for t in char["totals"]]
         if len(keys) != len(set(keys)):
             raise ParseError(f"chars[{i}].totals: a session total appears twice")
-
-    return export

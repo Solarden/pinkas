@@ -3,8 +3,11 @@
 import hashlib
 from datetime import UTC, datetime
 
-from psycopg2.extras import Json, execute_values
+import sqlalchemy as sa
+from psycopg2.extras import Json
+from sqlalchemy.dialects.postgresql import insert
 
+from pinkas.db import characters, events, execute, files, session_totals, snapshots
 from pinkas.parse import ParseError, parse
 
 # These have tables of their own; copying them into every snapshot would repeat up to 500 events.
@@ -40,11 +43,8 @@ def ingest(conn, body: bytes, fetched_at: datetime) -> dict:
     sha256 = hashlib.sha256(body).hexdigest()
 
     with conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO pinkas_files (sha256, fetched_at, body) VALUES (%s, %s, %s)"
-            " ON CONFLICT (sha256) DO NOTHING RETURNING id",
-            (sha256, fetched_at, body),
-        )
+        execute(cur, insert(files).values(sha256=sha256, fetched_at=fetched_at, body=body)
+                .on_conflict_do_nothing(index_elements=[files.c.sha256]).returning(files.c.id))
         row = cur.fetchone()
         # A file seen before, e.g. WoW restoring Pinkas.lua from its .bak.
         if row is None:
@@ -65,60 +65,49 @@ def ingest(conn, body: bytes, fetched_at: datetime) -> dict:
                 continue
 
             counts["characters"] += 1
-            cur.execute(
-                "INSERT INTO pinkas_characters (realm, name) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-                (char["realm"], char["name"]),
-            )
-            cur.execute(
-                "SELECT id FROM pinkas_characters WHERE realm = %s AND name = %s", (char["realm"], char["name"])
-            )
+            execute(cur, insert(characters).values(realm=char["realm"], name=char["name"]).on_conflict_do_nothing())
+            execute(cur, sa.select(characters.c.id).where(characters.c.realm == char["realm"], characters.c.name == char["name"]))
             character_id = cur.fetchone()[0]
             snapshot = {k: v for k, v in char.items() if k not in NOT_IN_SNAPSHOT}
             logout_at = ts(char["logout_at"])
 
             if any(snapshot[k] is None for k in CARRIED):
-                cur.execute(
-                    f"SELECT {', '.join(['data->%s'] * len(CARRIED))} FROM pinkas_snapshots"
-                    " WHERE character_id = %s AND logout_at < %s ORDER BY logout_at DESC LIMIT 1",
-                    (*CARRIED, character_id, logout_at),
-                )
+                execute(cur, sa.select(*(snapshots.c.data[k] for k in CARRIED))
+                        .where(snapshots.c.character_id == character_id, snapshots.c.logout_at < logout_at)
+                        .order_by(snapshots.c.logout_at.desc()).limit(1))
 
                 for k, previous in zip(CARRIED, cur.fetchone() or (None,) * len(CARRIED), strict=True):
                     if snapshot[k] is None:
                         snapshot[k] = previous
 
-            cur.execute(
-                "INSERT INTO pinkas_snapshots (character_id, logout_at, session_started_at, data, file_id)"
-                " VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-                (character_id, logout_at, ts(char["session_started_at"]), Json({**snapshot, "export": account}), file_id),
-            )
+            execute(cur, insert(snapshots).values(
+                character_id=character_id, logout_at=logout_at, session_started_at=ts(char["session_started_at"]),
+                data=Json({**snapshot, "export": account}), file_id=file_id,
+            ).on_conflict_do_nothing())
             counts["snapshots"] += cur.rowcount
 
             if char["events"]:
-                added = execute_values(
-                    cur,
-                    "INSERT INTO pinkas_events (character_id, event_id, at, kind, value) VALUES %s"
-                    " ON CONFLICT DO NOTHING RETURNING 1",
-                    [(character_id, e["id"], ts(e["at"]), e["kind"], Json(e["value"])) for e in char["events"]],
-                    fetch=True,
-                )
-                counts["events"] += len(added)
+                execute(cur, insert(events).values([
+                    {"character_id": character_id, "event_id": e["id"], "at": ts(e["at"]), "kind": e["kind"], "value": Json(e["value"])}
+                    for e in char["events"]
+                ]).on_conflict_do_nothing().returning(events.c.id))
+                counts["events"] += len(cur.fetchall())
 
             if char["totals"]:
                 # An older file (a .bak coming back) can't roll a total back.
-                written = execute_values(
-                    cur,
-                    "INSERT INTO pinkas_session_totals"
-                    " (character_id, session_started_at, kind, key, value, exported_at) VALUES %s"
-                    " ON CONFLICT (character_id, session_started_at, kind, key) DO UPDATE"
-                    " SET value = excluded.value, exported_at = excluded.exported_at"
-                    " WHERE excluded.exported_at > pinkas_session_totals.exported_at RETURNING 1",
-                    [
-                        (character_id, ts(t["session"]), t["kind"], t["key"], Json(t["value"]), exported_at)
-                        for t in char["totals"]
-                    ],
-                    fetch=True,
-                )
-                counts["totals"] += len(written)
+                upsert = insert(session_totals).values([
+                    {
+                        "character_id": character_id, "session_started_at": ts(t["session"]), "kind": t["kind"],
+                        "key": t["key"], "value": Json(t["value"]), "exported_at": exported_at,
+                    }
+                    for t in char["totals"]
+                ])
+                execute(cur, upsert.on_conflict_do_update(
+                    index_elements=[session_totals.c.character_id, session_totals.c.session_started_at,
+                                    session_totals.c.kind, session_totals.c.key],
+                    set_={"value": upsert.excluded.value, "exported_at": upsert.excluded.exported_at},
+                    where=upsert.excluded.exported_at > session_totals.c.exported_at,
+                ).returning(session_totals.c.id))
+                counts["totals"] += len(cur.fetchall())
 
     return counts

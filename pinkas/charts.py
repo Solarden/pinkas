@@ -43,6 +43,47 @@ def number(value: float) -> str:
     return f"{value:.3g}" if value != int(value) else str(int(value))
 
 
+def pen_path(pts: list[tuple], x_kind: str, px, py) -> str:
+    path, previous = [], None
+
+    for x, y in pts:
+        # A missing level (x_kind "level") leaves a gap: the path lifts the pen.
+        jump = x_kind == "level" and previous is not None and x - previous > 1
+        path.append(f"{'M' if not path or jump else 'L'}{px(x)},{py(y)}")
+        previous = x
+
+    return " ".join(path)
+
+
+def label_ends(drawn: list[dict]) -> None:
+    """Direct labels only where they don't collide; the legend names every series anyway."""
+    taken: list[float] = []
+
+    for s in sorted(drawn, key=lambda s: s["end"]["y"]):
+        if all(abs(s["end"]["y"] - t) >= END_LABEL_GAP for t in taken):
+            s["end"]["label"] = s["name"]
+            taken.append(s["end"]["y"])
+
+
+def readout(measured: list[tuple[dict, list]], x, x_kind: str, y_label) -> list[dict]:
+    """The crosshair's values at x, for static/pinkas.js. A day without a logout changed nothing, so over
+    dates a series holds its last value up to its last point; over levels only a measured value shows."""
+    values = []
+
+    for s, pts in measured:
+        before = [sy for sx, sy in pts if sx <= x]
+
+        if not before:
+            continue
+
+        held = x_kind == "date" and x <= pts[-1][0]
+
+        if held or any(sx == x for sx, _ in pts):
+            values.append({"name": s["name"], "slot": s["slot"], "value": y_label(before[-1])})
+
+    return values
+
+
 def line_chart(series: list[dict], x_kind: str, y_label=number) -> dict:
     """`series`: [{name, slot, points: [(x, y), …]}] with x a date or a level. Returns the plot's ticks,
     each series' path, its points (for the hover titles) and the end labels that don't collide."""
@@ -87,50 +128,18 @@ def line_chart(series: list[dict], x_kind: str, y_label=number) -> dict:
         if not pts:
             continue
 
-        path, previous = [], None
-
-        for x, y in pts:
-            # A missing level (x_kind "level") leaves a gap: the path lifts the pen.
-            jump = x_kind == "level" and previous is not None and x - previous > 1
-            path.append(f"{'M' if not path or jump else 'L'}{px(x)},{py(y)}")
-            previous = x
-
         last = pts[-1]
         drawn.append({
-            "name": s["name"], "slot": s["slot"], "d": " ".join(path),
+            "name": s["name"], "slot": s["slot"], "d": pen_path(pts, x_kind, px, py),
             "points": [{"x": px(x), "y": py(y), "title": f"{s['name']} · {x_label(x)} · {y_label(y)}"}
                        for x, y in pts],
             "end": {"x": px(last[0]), "y": py(last[1]), "label": None},
         })
 
-    # Direct labels only where they don't collide; the legend names every series anyway.
-    taken: list[float] = []
-
-    for s in sorted(drawn, key=lambda s: s["end"]["y"]):
-        if all(abs(s["end"]["y"] - t) >= END_LABEL_GAP for t in taken):
-            s["end"]["label"] = s["name"]
-            taken.append(s["end"]["y"])
-
-    # The crosshair's readout per x, for static/pinkas.js. A day without a logout changed nothing, so over
-    # dates a series holds its last value up to its last point; over levels only a measured value shows.
-    hover = []
-    known = [(s, [(sx, sy) for sx, sy in s["points"] if sy is not None]) for s in series]
-
-    for x in sorted({x for x, _ in points}):
-        values = []
-
-        for s, pts in known:
-            before = [sy for sx, sy in pts if sx <= x]
-
-            if not before:
-                continue
-
-            held = x_kind == "date" and x <= pts[-1][0]
-
-            if held or any(sx == x for sx, _ in pts):
-                values.append({"name": s["name"], "slot": s["slot"], "value": y_label(before[-1])})
-
-        hover.append({"x": px(x), "label": x_label(x), "values": values})
+    label_ends(drawn)
+    measured = [(s, [(sx, sy) for sx, sy in s["points"] if sy is not None]) for s in series]
+    hover = [{"x": px(x), "label": x_label(x), "values": readout(measured, x, x_kind, y_label)}
+             for x in sorted({x for x, _ in points})]
 
     return {
         "empty": False, "width": WIDTH, "height": HEIGHT,

@@ -34,13 +34,14 @@ from typing import NamedTuple
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import psycopg2
+import sqlalchemy as sa
 from jinja2 import Environment, FileSystemLoader
 from markdown_it import MarkdownIt
 from markdown_it.common.utils import escapeHtml
-from psycopg2.extras import execute_values
+from sqlalchemy.dialects.postgresql import JSONB, insert
 
-from pinkas import rested, stats
-from pinkas.db import NEWEST, fetch
+from pinkas import db, rested, stats
+from pinkas.db import execute, fetch
 from pinkas.ingest import ts
 from pinkas.parse import KIND_LABELS, KIND_OF, ROUTE_KINDS, TEXT_LIMIT, ParseError
 
@@ -317,65 +318,102 @@ def connect(dsn: str):
     return psycopg2.connect(dsn, connect_timeout=5)
 
 
-CHARACTERS_SQL = f"""
-SELECT c.id, c.realm, c.name, c.role, c.well_rested_rank, s.logout_at, s.data,
-       coalesce(c.playing_since > now() - make_interval(hours => %(hours)s)
-                AND NOT EXISTS (SELECT 1 FROM pinkas_snapshots o
-                                WHERE o.character_id <> c.id AND o.session_started_at > c.playing_since),
-                false) AS playing
-FROM pinkas_characters c
-{NEWEST}
-"""
-
-# The newest snapshot overall is the newest of each character's, so the unique index serves it.
-NERD_SQL = f"""
-SELECT p.status, p.since, f.sha256, f.size, f.fetched_at, s.export,
-       (SELECT count(*) FROM pinkas_snapshots) AS snapshots, (SELECT count(*) FROM pinkas_events) AS events
-FROM (SELECT 1) one
-LEFT JOIN pinkas_pull_state p ON true
-LEFT JOIN LATERAL (SELECT sha256, octet_length(body) AS size, fetched_at FROM pinkas_files
-                   ORDER BY fetched_at DESC LIMIT 1) f ON true
-LEFT JOIN LATERAL (SELECT s.data->'export' AS export FROM pinkas_characters c {NEWEST}
-                   ORDER BY s.logout_at DESC LIMIT 1) s ON true
-"""
+_c, _s = db.characters.c, db.NEWEST.c
+_other = db.snapshots.alias("o")
+CHARACTERS = sa.select(
+    _c.id, _c.realm, _c.name, _c.role, _c.well_rested_rank, _s.logout_at, _s.data,
+    sa.func.coalesce(
+        sa.and_(_c.playing_since > sa.func.now() - timedelta(hours=PLAYING_HOURS),
+                ~sa.exists().where(_other.c.character_id != _c.id, _other.c.session_started_at > _c.playing_since)),
+        sa.false(),
+    ).label("playing"),
+).select_from(db.WITH_NEWEST)
+ANY_CHARACTER = sa.select(sa.exists().select_from(db.characters))
 
 
-# Items of each character's newest snapshot only; ingest has already carried a bank or mailbox the
-# export left null.
-SEARCH_SQL = f"""
-SELECT c.realm, c.name, x.container, x.item->>'name' AS item, (x.item->>'id')::int AS item_id,
-       max((x.item->>'quality')::int) AS quality, sum((x.item->>'count')::int) AS count
-FROM pinkas_characters c
-{NEWEST}
-CROSS JOIN LATERAL (
-    SELECT 'bags', i FROM jsonb_array_elements(s.data->'bags') i
-    UNION ALL SELECT 'bank', i FROM jsonb_array_elements(s.data->'bank'->'items') i
-    UNION ALL SELECT 'mailbox', i FROM jsonb_array_elements(s.data->'mailbox'->'mails') m,
-                                       jsonb_array_elements(m->'items') i
-) x(container, item)
-WHERE c.archived_at IS NULL AND x.item->>'name' ILIKE %(pattern)s
-GROUP BY c.id, c.realm, c.name, c.sort, x.container, item, item_id
-ORDER BY item, item_id, c.sort NULLS LAST, c.name
-"""
+def _nerd():
+    """The newest snapshot overall is the newest of each character's, so the unique index serves it."""
+    newest_file = (
+        sa.select(db.files.c.sha256, sa.func.octet_length(db.files.c.body).label("size"), db.files.c.fetched_at)
+        .order_by(db.files.c.fetched_at.desc()).limit(1).lateral("f")
+    )
+    newest_export = (
+        sa.select(_s.data["export"].label("export")).select_from(db.WITH_NEWEST).order_by(_s.logout_at.desc()).limit(1)
+        .lateral("e")
+    )
+    one = sa.select(sa.literal(1)).subquery("one")
 
-# The skill line -> name pairs the game reported in every character's newest snapshot. A line reported
-# under two names (clients in two languages) keeps the first name alphabetically, every time.
-PROFESSIONS_SQL = f"""
-SELECT DISTINCT ON (skill_line) (p->>'skill_line')::int AS skill_line, p->>'name' AS name
-FROM pinkas_characters c
-{NEWEST}
-CROSS JOIN LATERAL jsonb_array_elements(s.data->'professions') p
-WHERE p->>'skill_line' IS NOT NULL
-ORDER BY skill_line, name
-"""
+    def count(table):
+        return sa.select(sa.func.count()).select_from(table).scalar_subquery()
+
+    return sa.select(
+        db.pull_state.c.status, db.pull_state.c.since, newest_file.c.sha256, newest_file.c.size, newest_file.c.fetched_at,
+        newest_export.c.export, count(db.snapshots).label("snapshots"), count(db.events).label("events"),
+    ).select_from(
+        one.outerjoin(db.pull_state, sa.true()).outerjoin(newest_file, sa.true()).outerjoin(newest_export, sa.true())
+    )
+
+
+NERD = _nerd()
+
+
+def elements(array) -> sa.TableValuedAlias:
+    """jsonb_array_elements in FROM; it may name an earlier FROM item without LATERAL."""
+    return sa.func.jsonb_array_elements(array).table_valued(sa.column("value", JSONB), joins_implicitly=True)
+
+
+def _search():
+    """Items of each character's newest snapshot only; ingest has already carried a bank or mailbox the
+    export left null."""
+    bags, bank, mails = elements(_s.data["bags"]), elements(_s.data["bank"]["items"]), elements(_s.data["mailbox"]["mails"])
+    in_mail = elements(mails.c.value["items"])
+    found = sa.union_all(
+        sa.select(sa.literal("bags").label("container"), bags.c.value.label("item")),
+        sa.select(sa.literal("bank"), bank.c.value),
+        sa.select(sa.literal("mailbox"), in_mail.c.value).select_from(mails, in_mail),
+    ).lateral("x")
+    item, item_id = found.c.item["name"].astext.label("item"), sa.cast(found.c.item["id"].astext, sa.Integer).label("item_id")
+
+    return (
+        sa.select(
+            _c.realm, _c.name, found.c.container, item, item_id,
+            sa.func.max(sa.cast(found.c.item["quality"].astext, sa.Integer)).label("quality"),
+            sa.func.sum(sa.cast(found.c.item["count"].astext, sa.Integer)).label("count"),
+        )
+        .select_from(db.WITH_NEWEST.join(found, sa.true()))
+        .where(_c.archived_at.is_(None), found.c.item["name"].astext.ilike(sa.bindparam("pattern")))
+        .group_by(_c.id, _c.realm, _c.name, _c.sort, found.c.container, item, item_id)
+        .order_by(item, item_id, _c.sort.nulls_last(), _c.name)
+    )
+
+
+SEARCH = _search()
+
+
+def _professions():
+    """The skill line -> name pairs the game reported in every character's newest snapshot. A line reported
+    under two names (clients in two languages) keeps the first name alphabetically, every time."""
+    learned = elements(_s.data["professions"])
+    skill_line = sa.cast(learned.c.value["skill_line"].astext, sa.Integer).label("skill_line")
+    name = learned.c.value["name"].astext.label("name")
+
+    return (
+        sa.select(skill_line, name).distinct(skill_line)
+        .select_from(db.WITH_NEWEST.join(learned, sa.true()))
+        .where(learned.c.value["skill_line"].astext.is_not(None))
+        .order_by(skill_line, name)
+    )
+
+
+PROFESSIONS = _professions()
 
 
 def professions(cur) -> dict[int, str]:
-    return {row["skill_line"]: row["name"] or f"profession {row['skill_line']}" for row in fetch(cur, PROFESSIONS_SQL)}
+    return {row["skill_line"]: row["name"] or f"profession {row['skill_line']}" for row in fetch(cur, PROFESSIONS)}
 
 
 def nerd_stats(cur) -> dict:
-    stats = fetch(cur, NERD_SQL)[0]
+    stats = fetch(cur, NERD)[0]
     stats["export"] = stats["export"] or {}
 
     return stats
@@ -383,8 +421,9 @@ def nerd_stats(cur) -> dict:
 
 def next_targets(cur) -> dict[tuple[int, int], list[int]]:
     targets: dict[tuple[int, int], list[int]] = {}
+    t = db.targets.c
 
-    for row in fetch(cur, "SELECT character_id, skill_line, skill FROM pinkas_targets ORDER BY skill"):
+    for row in fetch(cur, sa.select(t.character_id, t.skill_line, t.skill).order_by(t.skill)):
         targets.setdefault((row["character_id"], row["skill_line"]), []).append(row["skill"])
 
     return targets
@@ -621,9 +660,9 @@ def settings_rows(cur) -> list[dict]:
     targets = next_targets(cur)
     characters = fetch(
         cur,
-        "SELECT c.id, c.realm, c.name, c.role, c.sort, c.well_rested_rank, c.archived_at,"
-        f" s.data->'professions' AS professions FROM pinkas_characters c {NEWEST}"
-        " ORDER BY c.archived_at IS NOT NULL, c.sort NULLS LAST, c.name",
+        sa.select(_c.id, _c.realm, _c.name, _c.role, _c.sort, _c.well_rested_rank, _c.archived_at,
+                  _s.data["professions"].label("professions"))
+        .select_from(db.WITH_NEWEST).order_by(_c.archived_at.is_not(None), _c.sort.nulls_last(), _c.name),
     )
 
     for c in characters:
@@ -656,7 +695,7 @@ def save_settings(conn, form: dict[str, list[str]]) -> bool:
     character_id = int(character)
 
     with conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM pinkas_characters WHERE id = %s FOR UPDATE", (character_id,))
+        execute(cur, sa.select(_c.id).where(_c.id == character_id).with_for_update())
 
         if cur.fetchone() is None:
             return False
@@ -676,20 +715,18 @@ def save_settings(conn, form: dict[str, list[str]]) -> bool:
             upto[int(line)] = int(value or 0)
 
         archived = "archived" in form
-        cur.execute(
-            "UPDATE pinkas_characters SET role = %s, sort = %s, well_rested_rank = %s,"
-            " archived_at = CASE WHEN %s THEN coalesce(archived_at, now()) END,"
-            " playing_since = CASE WHEN %s THEN NULL ELSE playing_since END WHERE id = %s",
-            (role or None, int(sort) if sort else None, int(rank), archived, archived, character_id),
-        )
-        cur.execute(
-            "DELETE FROM pinkas_targets WHERE character_id = %s AND skill_line = ANY(%s)", (character_id, list(upto))
-        )
-        execute_values(
-            cur,
-            "INSERT INTO pinkas_targets (character_id, skill_line, skill) VALUES %s",
-            [(character_id, line, skill) for line, top in upto.items() for skill in TARGET_SKILLS if skill <= top],
-        )
+        execute(cur, sa.update(db.characters).where(_c.id == character_id).values(
+            role=role or None, sort=int(sort) if sort else None, well_rested_rank=int(rank),
+            archived_at=sa.case((sa.literal(archived), sa.func.coalesce(_c.archived_at, sa.func.now()))),
+            playing_since=sa.case((sa.literal(archived), sa.null()), else_=_c.playing_since),
+        ))
+        t = db.targets.c
+        execute(cur, sa.delete(db.targets).where(t.character_id == character_id, t.skill_line == sa.any_(sa.literal(list(upto)))))
+        rows = [{"character_id": character_id, "skill_line": line, "skill": skill}
+                for line, top in upto.items() for skill in TARGET_SKILLS if skill <= top]
+
+        if rows:
+            execute(cur, sa.insert(db.targets).values(rows))
 
     return True
 
@@ -698,8 +735,9 @@ def route_choices(cur) -> list[dict]:
     """The characters a route can go to: every one not archived, and any archived one a route still names."""
     rows = fetch(
         cur,
-        f"SELECT c.id, c.realm, c.name, s.data->'professions' AS professions FROM pinkas_characters c {NEWEST}"
-        " WHERE c.archived_at IS NULL OR c.id IN (SELECT character_id FROM pinkas_routes) ORDER BY c.realm, c.name",
+        sa.select(_c.id, _c.realm, _c.name, _s.data["professions"].label("professions")).select_from(db.WITH_NEWEST)
+        .where(sa.or_(_c.archived_at.is_(None), _c.id.in_(sa.select(db.routes.c.character_id))))
+        .order_by(_c.realm, _c.name),
     )
 
     # The export carries the route back as Name-Realm, and the pull refuses a longer one: only a forged name gets here.
@@ -726,7 +764,8 @@ def recipient_of(characters: list[dict], to: str) -> dict | None:
 
 def route_recipients(cur) -> dict[str, str]:
     """Each route's recipient as the addon takes it: Name-Realm."""
-    cur.execute("SELECT r.kind, c.name, c.realm FROM pinkas_routes r JOIN pinkas_characters c ON c.id = r.character_id")
+    r = db.routes.c
+    execute(cur, sa.select(r.kind, _c.name, _c.realm).select_from(db.routes.join(db.characters, _c.id == r.character_id)))
 
     return {kind: name + "-" + plain_realm(realm) for kind, name, realm in cur.fetchall()}
 
@@ -745,15 +784,14 @@ def store_routes(conn, form: dict[str, list[str]]) -> bool:
         if not {int(p) for p in picks.values() if p} <= {c["id"] for c in route_choices(cur)}:
             return False
 
-        cur.execute("DELETE FROM pinkas_routes WHERE kind = ANY(%s)", ([k for k, p in picks.items() if not p],))
+        execute(cur, sa.delete(db.routes).where(db.routes.c.kind == sa.any_(sa.literal([k for k, p in picks.items() if not p]))))
 
         for kind, pick in picks.items():
             if pick:
-                cur.execute(
-                    "INSERT INTO pinkas_routes (kind, character_id) VALUES (%s, %s)"
-                    " ON CONFLICT (kind) DO UPDATE SET character_id = EXCLUDED.character_id",
-                    (kind, int(pick)),
-                )
+                upsert = insert(db.routes).values(kind=kind, character_id=int(pick))
+                execute(cur, upsert.on_conflict_do_update(
+                    index_elements=[db.routes.c.kind], set_={"character_id": upsert.excluded.character_id},
+                ))
 
     return True
 
@@ -771,19 +809,16 @@ def set_playing(conn, character_id: int | None) -> bool:
     """False for an unknown or archived character, which `/` doesn't show. The row locks serialise
     two devices, so the partial unique index (one playing character) is never tripped."""
     with conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM pinkas_characters WHERE archived_at IS NULL FOR UPDATE")
+        execute(cur, sa.select(_c.id).where(_c.archived_at.is_(None)).with_for_update())
 
         if character_id is not None and character_id not in {row[0] for row in cur.fetchall()}:
             return False
 
-        cur.execute(
-            "UPDATE pinkas_characters SET playing_since = NULL"
-            " WHERE playing_since IS NOT NULL AND id IS DISTINCT FROM %s",
-            (character_id,),
-        )
+        execute(cur, sa.update(db.characters).where(_c.playing_since.is_not(None), _c.id.is_distinct_from(character_id))
+                .values(playing_since=None))
 
         if character_id is not None:
-            cur.execute("UPDATE pinkas_characters SET playing_since = now() WHERE id = %s", (character_id,))
+            execute(cur, sa.update(db.characters).where(_c.id == character_id).values(playing_since=sa.func.now()))
 
     return True
 
@@ -857,45 +892,64 @@ class Handler(http.server.BaseHTTPRequestHandler):
         conf: Config = self.server.conf
         url = urlparse(self.path)
 
-        if conf.desktop_host:
-            # Any other name is a page elsewhere reaching this port through DNS rebinding.
-            if self.headers.get("Host") != conf.desktop_host:
-                return self.send(400, render("error.html", message="Bad request."))
-
-            if url.path == "/start" and not post:
-                return self.start(conf, url)
-
-            if url.path in ("/login", "/logout"):
-                return self.send(404, render("error.html", message="Not found."))
+        if conf.desktop_host and self.desktop_answered(conf, url, post):
+            return
 
         if url.path == "/login":
             return self.login(conf) if post else self.login_page(url)
 
         # Before the session check: the scripts hold no data, and a redirect in their place would be refused.
         if url.path in STATIC and not post:
-            body, etag = STATIC[url.path]
-            self.cache_control = "no-cache"
-
-            if self.headers.get("If-None-Match") == etag:
-                return self.send(304, headers=(("ETag", etag),))
-
-            return self.send(200, body, (("ETag", etag),), kind="text/javascript")
+            return self.static(url.path)
 
         if post and url.path == "/logout":
-            if not same(self.read_form().get("t", [""])[0], form_token(conf)):
-                return self.send(400, render("error.html", message="Stale form: reload and try again."))
-
-            return self.redirect("/login", ("Set-Cookie", LOGOUT_COOKIE))
+            return self.logout(conf)
 
         if not valid_session(conf, self.headers.get("Cookie"), time.time()):
-            if conf.desktop_host:
-                return self.send(403, render("error.html", message=OWN_WINDOW))
+            return self.no_session(conf, url, post)
 
-            # A POST can't be replayed after login, so it lands on the list instead.
-            target = "/" if post else safe_next(url.path)
+        self.serve(conf, url, post)
 
-            return self.redirect("/login?next=" + quote(target, safe="/"))
+    def desktop_answered(self, conf: Config, url, post: bool) -> bool:
+        """The Windows app's own answers before the server's; False when there is none."""
+        # Any other name is a page elsewhere reaching this port through DNS rebinding.
+        if self.headers.get("Host") != conf.desktop_host:
+            self.send(400, render("error.html", message="Bad request."))
+        elif url.path == "/start" and not post:
+            self.start(conf, url)
+        elif url.path in ("/login", "/logout"):
+            self.send(404, render("error.html", message="Not found."))
+        else:
+            return False
 
+        return True
+
+    def static(self, path: str) -> None:
+        body, etag = STATIC[path]
+        self.cache_control = "no-cache"
+
+        if self.headers.get("If-None-Match") == etag:
+            return self.send(304, headers=(("ETag", etag),))
+
+        self.send(200, body, (("ETag", etag),), kind="text/javascript")
+
+    def logout(self, conf: Config) -> None:
+        if not same(self.read_form().get("t", [""])[0], form_token(conf)):
+            return self.send(400, render("error.html", message="Stale form: reload and try again."))
+
+        self.redirect("/login", ("Set-Cookie", LOGOUT_COOKIE))
+
+    def no_session(self, conf: Config, url, post: bool) -> None:
+        if conf.desktop_host:
+            return self.send(403, render("error.html", message=OWN_WINDOW))
+
+        # A POST can't be replayed after login, so it lands on the list instead.
+        target = "/" if post else safe_next(url.path)
+
+        self.redirect("/login?next=" + quote(target, safe="/"))
+
+    def serve(self, conf: Config, url, post: bool) -> None:
+        """An authenticated request, on its own database connection."""
         cookie = ("Set-Cookie", session_cookie(conf, time.time()))
         conn = None
 
@@ -985,266 +1039,305 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         return {"html": render_guide(text, down), "message": None, "editable": False}
 
+    def get_pages(self) -> dict:
+        """Each path's page. The Game tab is the Windows app's only, and a guide file named by PINKAS_GUIDE is
+        edited where it lives, not here."""
+        conf = self.server.conf
+        pages = {
+            "/": self.get_index, "/search": self.get_search, "/stats": self.get_stats, "/guide": self.get_guide,
+            "/settings": self.get_settings, "/settings/characters": self.get_characters,
+            "/settings/routes": self.get_routes_form if conf.desktop_host else self.get_routes,
+        }
+
+        if not conf.guide:
+            pages["/guide/edit"] = self.get_guide_edit
+
+        if conf.desktop_host:
+            pages["/settings/game"] = self.get_game
+
+        return pages
+
     def get(self, conn, path: str, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        now = datetime.now(UTC)
-
-        if path == "/":
-            with conn, conn.cursor() as cur:
-                rows = fetch(cur, CHARACTERS_SQL + " WHERE c.archived_at IS NULL ORDER BY c.sort NULLS LAST, c.name",
-                             {"hours": PLAYING_HOURS})
-                targets = next_targets(cur)
-                nerd = nerd_stats(cur)
-
-            characters = [summary(row, targets, now) for row in rows]
-            characters.sort(key=lambda c: not c["playing"])
-            playing = characters[0] if characters and characters[0]["playing"] else None
-
-            routes = nerd["export"].get("routes", {})
-
-            for c in characters:
-                c["slots"] = slots(c["data"]["bags"], c["data"].get("bag_slots"))
-
-            # A recipient that is a listed character by its name, as the mail plan shows it.
-            return self.page(conn, 200, "index.html", ctx, cookie, nerd, characters=characters, playing=playing,
-                             routes=[(kind, (recipient_of(characters, routes[kind]) or {"name": routes[kind]})["name"])
-                                     for kind in ROUTE_KINDS if routes.get(kind)],
-                             plan=mail_plan(characters, routes),
-                             account=account_summary(characters),
-                             next_up=next_up(characters), cards=card_keys(characters))
-
-        if path == "/search":
-            q = parse_qs(query).get("q", [""])[0].strip()
-            results = None
-
-            if q:
-                with conn, conn.cursor() as cur:
-                    results = found(fetch(cur, SEARCH_SQL, {"pattern": like_pattern(q)}))
-
-            return self.page(conn, 200, "search.html", ctx, cookie, q=q, results=results)
-
-        if path == "/stats":
-            key = stats.range_key(parse_qs(query).get("range", [None])[0])
-
-            with conn, conn.cursor() as cur:
-                # The charts change with an ingest (a new file), a character's role or name, and the day.
-                cur.execute("SELECT max(id) FROM pinkas_files")
-                (newest,) = cur.fetchone()
-                cur.execute(stats.CHARACTERS_SQL)
-                mark = (newest, now.astimezone().date(), tuple(cur.fetchall()))
-                cached = self.server.stats_cache.get(key)
-
-                if cached and cached[0] == mark:
-                    view = cached[1]
-                else:
-                    view = stats.view(stats.collect(cur, key, now))
-                    self.server.stats_cache[key] = (mark, view)
-
-                nerd = nerd_stats(cur)
-
-            return self.page(conn, 200, "stats.html", ctx, cookie, nerd, v=view)
-
-        if path == "/guide":
-            return self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(conn, down=1))
-
-        # A file named by PINKAS_GUIDE is edited where it lives.
-        if path == "/guide/edit" and not self.server.conf.guide:
-            return self.page(conn, 200, "guide_edit.html", ctx, cookie, text=saved_guide(conn), error=None)
-
-        if path == "/settings":
-            return self.redirect("/settings/game" if self.server.conf.desktop_host else "/settings/routes")
-
-        if path == "/settings/game" and self.server.conf.desktop_host:
-            with conn, conn.cursor() as cur:
-                cur.execute("SELECT EXISTS (SELECT 1 FROM pinkas_characters)")
-                (any_character,) = cur.fetchone()
-
-            app = self.server.app
-            game, addon, files = app.game(), app.addon(), app.files()
-            # The first run's checklist, until a character is read; a folder lost later is the missing state instead.
-            setup = None if any_character else {"game": game, "addon": addon["installed"]}
-            done = ctx["flash"]
-
-            if done and "{v}" in done[1]:
-                ctx["flash"] = (done[0], done[1].format(v=addon["newest"]))
-
-            return self.page(conn, 200, "settings_game.html", ctx, cookie, tab="game", game=game, files=files,
-                             addon=addon, candidates=[] if game else app.candidates(), setup=setup,
-                             missing=app.missing())
-
-        if path == "/settings/routes" and self.server.conf.desktop_host:
-            with conn, conn.cursor() as cur:
-                choices = route_choices(cur)
-                cur.execute("SELECT kind, character_id FROM pinkas_routes")
-                picked = dict(cur.fetchall())
-                nerd = nerd_stats(cur)
-
-            # None ever set here: the game's routes apply, so the form starts from them where a route names one character.
-            from_game = not picked and not self.server.app.routes_set_here()
-
-            if from_game:
-                for kind, to in nerd["export"].get("routes", {}).items():
-                    matches = [c["id"] for c in choices if to and is_recipient(c, to)]
-
-                    if len(matches) == 1:
-                        picked[kind] = matches[0]
-
-            routes = []
-
-            for kind in ROUTE_KINDS:
-                line, craft = CRAFTS[kind]
-                ranks = sorted(((p["rank"], c["name"]) for c in choices for p in c["professions"]
-                                if p["skill_line"] == line and p["rank"]), reverse=True)
-                hint = ", ".join(f"{name} {rank}" for rank, name in ranks) or "nobody has it yet"
-                routes.append({"kind": kind, "label": KIND_LABELS[kind], "picked": picked.get(kind), "hint": f"{craft}: {hint}"})
-
-            realms = {}
-
-            for c in choices:
-                realms.setdefault(c["realm"], []).append(c)
-
-            return self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes", routes=routes,
-                             realms=realms, from_game=from_game and bool(picked))
-
-        if path == "/settings/routes":
-            with conn, conn.cursor() as cur:
-                nerd = nerd_stats(cur)
-
-            routes = nerd["export"].get("routes", {})
-
-            return self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes",
-                             routes=[(KIND_LABELS[kind], routes.get(kind)) for kind in ROUTE_KINDS])
-
-        if path == "/settings/characters":
-            with conn, conn.cursor() as cur:
-                characters = settings_rows(cur)
-
-            return self.page(conn, 200, "settings_characters.html", ctx, cookie, tab="characters",
-                             characters=characters, skills=TARGET_SKILLS)
+        if page := self.get_pages().get(path):
+            return page(conn, query, ctx, cookie)
 
         # Split before unquoting, so a name holding "/" (sent as %2F) stays one segment.
         parts = path.split("/")
 
         if len(parts) == 4 and parts[1] == "c":
-            realm, name = unquote(parts[2]), unquote(parts[3])
-
-            with conn, conn.cursor() as cur:
-                rows = fetch(cur, CHARACTERS_SQL + " WHERE c.realm = %(realm)s AND c.name = %(name)s",
-                             {"hours": PLAYING_HOURS, "realm": realm, "name": name})
-                targets = next_targets(cur)
-                learned = {p["skill_line"] for p in rows[0]["data"]["professions"]} if rows else set()
-                unlearned = {line: skills[-1] for (cid, line), skills in targets.items()
-                             if rows and cid == rows[0]["id"] and line not in learned}
-                # Every character's newest snapshot is read only when a name is needed.
-                known = professions(cur) if unlearned else {}
-                # This realm's first, for a recipient typed without one.
-                alts = fetch(cur, "SELECT name, realm FROM pinkas_characters ORDER BY realm <> %(realm)s",
-                             {"realm": realm})
-                history = stats.history(cur, rows[0]["id"], now) if rows else None
-
-            if rows:
-                row = summary(rows[0], targets, now)
-                data = row["data"]
-                planned = sorted(
-                    ({"name": known.get(line, f"profession {line}"), "upto": upto} for line, upto in unlearned.items()),
-                    key=lambda p: p["name"],
-                )
-
-                routes = data.get("export", {}).get("routes", {})
-                bank = data["bank"]
-                bank_slots = slots(bank["items"], bank.get("slots")) if bank else None
-                bank_full = bool(bank_slots and bank_slots["total"] and bank_slots["used"] >= bank_slots["total"])
-                bag_groups = grouped(data["bags"], routes, row, in_bank=False, bank_full=bank_full)
-                bank_groups = grouped(bank["items"], routes, row, in_bank=True, bank_full=False) if bank else None
-
-                # A recipient that is one of the characters gets a link to its page.
-                for group in bag_groups + (bank_groups or []):
-                    group["who"] = recipient_of(alts, group["to"]) if group["to"] else None
-
-                return self.page(
-                    conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(conn, down=1),
-                    bags=bag_groups, bag_slots=slots(data["bags"], data.get("bag_slots")),
-                    bank=bank_groups, bank_slots=bank_slots, history=history,
-                    raw=json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True),
-                )
+            return self.get_character(conn, unquote(parts[2]), unquote(parts[3]), ctx, cookie)
 
         self.not_found(conn, ctx, cookie)
 
+    def get_index(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        now = datetime.now(UTC)
+
+        with conn, conn.cursor() as cur:
+            rows = fetch(cur, CHARACTERS.where(_c.archived_at.is_(None)).order_by(_c.sort.nulls_last(), _c.name))
+            targets = next_targets(cur)
+            nerd = nerd_stats(cur)
+
+        characters = [summary(row, targets, now) for row in rows]
+        characters.sort(key=lambda c: not c["playing"])
+        playing = characters[0] if characters and characters[0]["playing"] else None
+
+        routes = nerd["export"].get("routes", {})
+
+        for c in characters:
+            c["slots"] = slots(c["data"]["bags"], c["data"].get("bag_slots"))
+
+        # A recipient that is a listed character by its name, as the mail plan shows it.
+        self.page(conn, 200, "index.html", ctx, cookie, nerd, characters=characters, playing=playing,
+                  routes=[(kind, (recipient_of(characters, routes[kind]) or {"name": routes[kind]})["name"])
+                          for kind in ROUTE_KINDS if routes.get(kind)],
+                  plan=mail_plan(characters, routes),
+                  account=account_summary(characters),
+                  next_up=next_up(characters), cards=card_keys(characters))
+
+    def get_search(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        q = parse_qs(query).get("q", [""])[0].strip()
+        results = None
+
+        if q:
+            with conn, conn.cursor() as cur:
+                results = found(fetch(cur, SEARCH, {"pattern": like_pattern(q)}))
+
+        self.page(conn, 200, "search.html", ctx, cookie, q=q, results=results)
+
+    def get_stats(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        now = datetime.now(UTC)
+        key = stats.range_key(parse_qs(query).get("range", [None])[0])
+
+        with conn, conn.cursor() as cur:
+            # The charts change with an ingest (a new file), a character's role or name, and the day.
+            execute(cur, sa.select(sa.func.max(db.files.c.id)))
+            (newest,) = cur.fetchone()
+            execute(cur, stats.CHARACTERS)
+            mark = (newest, now.astimezone().date(), tuple(cur.fetchall()))
+            cached = self.server.stats_cache.get(key)
+
+            if cached and cached[0] == mark:
+                view = cached[1]
+            else:
+                view = stats.view(stats.collect(cur, key, now))
+                self.server.stats_cache[key] = (mark, view)
+
+            nerd = nerd_stats(cur)
+
+        self.page(conn, 200, "stats.html", ctx, cookie, nerd, v=view)
+
+    def get_guide(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(conn, down=1))
+
+    def get_guide_edit(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        self.page(conn, 200, "guide_edit.html", ctx, cookie, text=saved_guide(conn), error=None)
+
+    def get_settings(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        self.redirect("/settings/game" if self.server.conf.desktop_host else "/settings/routes")
+
+    def get_game(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        with conn, conn.cursor() as cur:
+            execute(cur, ANY_CHARACTER)
+            (any_character,) = cur.fetchone()
+
+        app = self.server.app
+        game, addon, files = app.game(), app.addon(), app.files()
+        # The first run's checklist, until a character is read; a folder lost later is the missing state instead.
+        setup = None if any_character else {"game": game, "addon": addon["installed"]}
+        done = ctx["flash"]
+
+        if done and "{v}" in done[1]:
+            ctx["flash"] = (done[0], done[1].format(v=addon["newest"]))
+
+        self.page(conn, 200, "settings_game.html", ctx, cookie, tab="game", game=game, files=files,
+                  addon=addon, candidates=[] if game else app.candidates(), setup=setup,
+                  missing=app.missing())
+
+    def get_routes_form(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        with conn, conn.cursor() as cur:
+            choices = route_choices(cur)
+            execute(cur, sa.select(db.routes.c.kind, db.routes.c.character_id))
+            picked = dict(cur.fetchall())
+            nerd = nerd_stats(cur)
+
+        # None ever set here: the game's routes apply, so the form starts from them where a route names one character.
+        from_game = not picked and not self.server.app.routes_set_here()
+
+        if from_game:
+            for kind, to in nerd["export"].get("routes", {}).items():
+                matches = [c["id"] for c in choices if to and is_recipient(c, to)]
+
+                if len(matches) == 1:
+                    picked[kind] = matches[0]
+
+        routes = []
+
+        for kind in ROUTE_KINDS:
+            line, craft = CRAFTS[kind]
+            ranks = sorted(((p["rank"], c["name"]) for c in choices for p in c["professions"]
+                            if p["skill_line"] == line and p["rank"]), reverse=True)
+            hint = ", ".join(f"{name} {rank}" for rank, name in ranks) or "nobody has it yet"
+            routes.append({"kind": kind, "label": KIND_LABELS[kind], "picked": picked.get(kind), "hint": f"{craft}: {hint}"})
+
+        realms = {}
+
+        for c in choices:
+            realms.setdefault(c["realm"], []).append(c)
+
+        self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes", routes=routes,
+                  realms=realms, from_game=from_game and bool(picked))
+
+    def get_routes(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        with conn, conn.cursor() as cur:
+            nerd = nerd_stats(cur)
+
+        routes = nerd["export"].get("routes", {})
+
+        self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes",
+                  routes=[(KIND_LABELS[kind], routes.get(kind)) for kind in ROUTE_KINDS])
+
+    def get_characters(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        with conn, conn.cursor() as cur:
+            characters = settings_rows(cur)
+
+        self.page(conn, 200, "settings_characters.html", ctx, cookie, tab="characters",
+                  characters=characters, skills=TARGET_SKILLS)
+
+    def get_character(self, conn, realm: str, name: str, ctx: dict, cookie: tuple[str, str]) -> None:
+        now = datetime.now(UTC)
+
+        with conn, conn.cursor() as cur:
+            rows = fetch(cur, CHARACTERS.where(_c.realm == realm, _c.name == name))
+            targets = next_targets(cur)
+            learned = {p["skill_line"] for p in rows[0]["data"]["professions"]} if rows else set()
+            unlearned = {line: skills[-1] for (cid, line), skills in targets.items()
+                         if rows and cid == rows[0]["id"] and line not in learned}
+            # Every character's newest snapshot is read only when a name is needed.
+            known = professions(cur) if unlearned else {}
+            # This realm's first, for a recipient typed without one.
+            alts = fetch(cur, sa.select(_c.name, _c.realm).order_by(_c.realm != realm))
+            history = stats.history(cur, rows[0]["id"], now) if rows else None
+
+        if not rows:
+            return self.not_found(conn, ctx, cookie)
+
+        row = summary(rows[0], targets, now)
+        data = row["data"]
+        planned = sorted(
+            ({"name": known.get(line, f"profession {line}"), "upto": upto} for line, upto in unlearned.items()),
+            key=lambda p: p["name"],
+        )
+
+        routes = data.get("export", {}).get("routes", {})
+        bank = data["bank"]
+        bank_slots = slots(bank["items"], bank.get("slots")) if bank else None
+        bank_full = bool(bank_slots and bank_slots["total"] and bank_slots["used"] >= bank_slots["total"])
+        bag_groups = grouped(data["bags"], routes, row, in_bank=False, bank_full=bank_full)
+        bank_groups = grouped(bank["items"], routes, row, in_bank=True, bank_full=False) if bank else None
+
+        # A recipient that is one of the characters gets a link to its page.
+        for group in bag_groups + (bank_groups or []):
+            group["who"] = recipient_of(alts, group["to"]) if group["to"] else None
+
+        self.page(
+            conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(conn, down=1),
+            bags=bag_groups, bag_slots=slots(data["bags"], data.get("bag_slots")),
+            bank=bank_groups, bank_slots=bank_slots, history=history,
+            raw=json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True),
+        )
+
+    def post_pages(self) -> dict:
+        """Each path's form, on the same terms as get_pages."""
+        conf = self.server.conf
+        forms = {"/playing": self.post_playing, "/settings/characters": self.post_characters}
+
+        if not conf.guide:
+            forms["/guide/edit"] = self.post_guide
+
+        if conf.desktop_host:
+            forms |= {"/settings/game": self.post_game, "/settings/routes": self.post_routes, "/settings/addon": self.post_addon}
+
+        return forms
+
     def post(self, conn, path: str, ctx: dict, cookie: tuple[str, str]) -> None:
         form = self.read_form()
+        handler = self.post_pages().get(path)
 
         if not same(form.get("t", [""])[0], ctx["token"]):
             # The guide's text comes back in the editor: an error page would lose it.
-            if path == "/guide/edit" and not self.server.conf.guide:
+            if handler == self.post_guide:
                 return self.page(conn, 400, "guide_edit.html", ctx, cookie, text=form.get("text", [""])[0],
                                  error="Not saved: the page was open too long. Press Save guide again.")
 
             return self.page(conn, 400, "error.html", ctx, cookie, message="Stale form: reload and try again.")
 
-        if path == "/playing":
-            chosen = form.get("character", [""])[0]
-
-            if chosen == "" or (chosen.isascii() and chosen.isdigit()):
-                if set_playing(conn, int(chosen) if chosen else None):
-                    return self.redirect("/", cookie)
-
-            return self.page(conn, 400, "error.html", ctx, cookie, message="Unknown character.")
-
-        if path == "/settings/characters":
-            if save_settings(conn, form):
-                return self.redirect("/settings/characters?done=saved", cookie)
-
-            return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: a value is out of range.")
-
-        if path == "/guide/edit" and not self.server.conf.guide:
-            # Postgres can't store a NUL, and one never belongs in notes.
-            text = form.get("text", [""])[0].replace("\r\n", "\n").replace("\x00", "")
-
-            if len(text.encode()) > GUIDE_LIMIT:
-                return self.page(conn, 413, "guide_edit.html", ctx, cookie, text=text,
-                                 error="Not saved: the guide is over 256 KB. Shorten it, then save again.")
-
-            save_guide(conn, text)
-
-            return self.redirect("/guide?done=guide", cookie)
-
-        if path == "/settings/game" and self.server.conf.desktop_host:
-            app = self.server.app
-
-            if "log" in form:
-                app.open_log()
-
-                return self.redirect("/settings/game", cookie)
-
-            if "choose" in form:
-                outcome = app.choose()
-
-                return self.redirect("/settings/game" + ("" if outcome == "cancelled" else f"?done={outcome}"), cookie)
-
-            pick = form.get("game", [""])[0]
-
-            if pick.isascii() and pick.isdigit() and app.use(int(pick)):
-                return self.redirect("/settings/game?done=chosen", cookie)
-
-            return self.page(conn, 400, "error.html", ctx, cookie, message="Unknown game folder.")
-
-        if path == "/settings/routes" and self.server.conf.desktop_host:
-            if not store_routes(conn, form):
-                return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: reload the page and try again.")
-
-            return self.redirect(f"/settings/routes?done={self.server.app.write_routes(read_recipients(conn))}", cookie)
-
-        if path == "/settings/addon" and self.server.conf.desktop_host:
-            outcome = self.server.app.install(read_recipients(conn))
-
-            # A folder gone since the page was shown: the page now says it is missing.
-            return self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), cookie)
+        if handler:
+            return handler(conn, form, ctx, cookie)
 
         self.not_found(conn, ctx, cookie)
+
+    def post_playing(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        chosen = form.get("character", [""])[0]
+
+        if chosen == "" or (chosen.isascii() and chosen.isdigit()):
+            if set_playing(conn, int(chosen) if chosen else None):
+                return self.redirect("/", cookie)
+
+        self.page(conn, 400, "error.html", ctx, cookie, message="Unknown character.")
+
+    def post_characters(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        if save_settings(conn, form):
+            return self.redirect("/settings/characters?done=saved", cookie)
+
+        self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: a value is out of range.")
+
+    def post_guide(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        # Postgres can't store a NUL, and one never belongs in notes.
+        text = form.get("text", [""])[0].replace("\r\n", "\n").replace("\x00", "")
+
+        if len(text.encode()) > GUIDE_LIMIT:
+            return self.page(conn, 413, "guide_edit.html", ctx, cookie, text=text,
+                             error="Not saved: the guide is over 256 KB. Shorten it, then save again.")
+
+        save_guide(conn, text)
+        self.redirect("/guide?done=guide", cookie)
+
+    def post_game(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        app = self.server.app
+
+        if "log" in form:
+            app.open_log()
+
+            return self.redirect("/settings/game", cookie)
+
+        if "choose" in form:
+            outcome = app.choose()
+
+            return self.redirect("/settings/game" + ("" if outcome == "cancelled" else f"?done={outcome}"), cookie)
+
+        pick = form.get("game", [""])[0]
+
+        if pick.isascii() and pick.isdigit() and app.use(int(pick)):
+            return self.redirect("/settings/game?done=chosen", cookie)
+
+        self.page(conn, 400, "error.html", ctx, cookie, message="Unknown game folder.")
+
+    def post_routes(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        if not store_routes(conn, form):
+            return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: reload the page and try again.")
+
+        self.redirect(f"/settings/routes?done={self.server.app.write_routes(read_recipients(conn))}", cookie)
+
+    def post_addon(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+        outcome = self.server.app.install(read_recipients(conn))
+
+        # A folder gone since the page was shown: the page now says it is missing.
+        self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), cookie)
 
 
 def saved_guide(conn) -> str:
     with conn, conn.cursor() as cur:
-        cur.execute("SELECT text FROM pinkas_guide")
+        execute(cur, sa.select(db.guide.c.text))
         row = cur.fetchone()
 
     return row[0] if row else ""
@@ -1252,11 +1345,10 @@ def saved_guide(conn) -> str:
 
 def save_guide(conn, text: str) -> None:
     with conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO pinkas_guide (text, updated_at) VALUES (%s, now())"
-            " ON CONFLICT (id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at",
-            (text,),
-        )
+        upsert = insert(db.guide).values(text=text, updated_at=sa.func.now())
+        execute(cur, upsert.on_conflict_do_update(
+            index_elements=[db.guide.c.id], set_={"text": upsert.excluded.text, "updated_at": upsert.excluded.updated_at},
+        ))
 
 
 def desktop_server(dsn: str, app, first_page: str = "/") -> tuple[http.server.ThreadingHTTPServer, str]:

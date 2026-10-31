@@ -13,10 +13,13 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import psycopg2
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert
 
+from pinkas.db import execute, files, pull_state
 from pinkas.ingest import ingest
 from pinkas.parse import MAX_BYTES
 
@@ -86,9 +89,7 @@ def fetch(source: str) -> bytes:
 
 def purge(conn) -> int:
     with conn, conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM pinkas_files WHERE fetched_at < now() - make_interval(days => %s)", (KEEP_FILES_DAYS,)
-        )
+        execute(cur, sa.delete(files).where(files.c.fetched_at < sa.func.now() - timedelta(days=KEEP_FILES_DAYS)))
 
         return cur.rowcount
 
@@ -97,17 +98,16 @@ def record_state(conn, status: str, log: Callable) -> None:
     """Writes the status only when it changes, with one task_log row: a failure that persists for a
     day leaves one row, not one every few minutes."""
     with conn, conn.cursor() as cur:
-        cur.execute("SELECT status FROM pinkas_pull_state")
+        execute(cur, sa.select(pull_state.c.status))
         row = cur.fetchone()
         previous = row[0] if row else None
         if status == previous:
             return
 
-        cur.execute(
-            "INSERT INTO pinkas_pull_state (status, since) VALUES (%s, now())"
-            " ON CONFLICT (id) DO UPDATE SET status = excluded.status, since = excluded.since",
-            (status,),
-        )
+        upsert = insert(pull_state).values(status=status, since=sa.func.now())
+        execute(cur, upsert.on_conflict_do_update(
+            index_elements=[pull_state.c.id], set_={"status": upsert.excluded.status, "since": upsert.excluded.since},
+        ))
 
     if status != "ok":
         log("error", status)
