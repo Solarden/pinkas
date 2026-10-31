@@ -950,21 +950,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def serve(self, conf: Config, url, post: bool) -> None:
         """An authenticated request, on its own database connection."""
-        cookie = ("Set-Cookie", session_cookie(conf, time.time()))
-        conn = None
+        self.cookie = ("Set-Cookie", session_cookie(conf, time.time()))
+        self.conn = None
 
         try:
-            conn = connect(conf.dsn)
-            ctx = {"token": form_token(conf), "desktop": bool(conf.desktop_host), "flash": None}
+            self.conn = connect(conf.dsn)
+            self.ctx = {"token": form_token(conf), "desktop": bool(conf.desktop_host), "flash": None}
             done = DONE.get(parse_qs(url.query).get("done", [""])[0])
 
             if done and not post and done[0] == url.path:
-                ctx["flash"] = done[1:]
+                self.ctx["flash"] = done[1:]
 
             if post:
-                self.post(conn, url.path, ctx, cookie)
+                self.post(url.path)
             else:
-                self.get(conn, url.path, url.query, ctx, cookie)
+                self.get(url.path, url.query)
         # The client left mid-response: nothing to answer.
         except ConnectionError:
             pass
@@ -975,8 +975,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             message = "Database unavailable." if database else "Server error: see the log."
             self.send(503 if database else 500, render("error.html", message=message))
         finally:
-            if conn is not None:
-                conn.close()
+            if self.conn is not None:
+                self.conn.close()
 
     def start(self, conf: Config, url) -> None:
         """The window's first request: its token, used once, becomes the session cookie."""
@@ -1007,23 +1007,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         self.send(401, render("login.html", next=target, error="Wrong password."))
 
-    def page(self, conn, code: int, name: str, ctx: dict, cookie: tuple[str, str], nerd=None, **more) -> None:
+    def page(self, code: int, name: str, nerd=None, **more) -> None:
         """A rendered page, the nerd panel included: only authenticated handlers call this."""
         if nerd is None:
-            with conn, conn.cursor() as cur:
+            with self.conn, self.conn.cursor() as cur:
                 nerd = nerd_stats(cur)
 
-        self.send(code, render(name, **ctx, nerd=nerd, **more), (cookie,))
+        self.send(code, render(name, **self.ctx, nerd=nerd, **more), (self.cookie,))
 
-    def not_found(self, conn, ctx: dict, cookie: tuple[str, str]) -> None:
-        self.page(conn, 404, "error.html", ctx, cookie, message="Not found.")
+    def not_found(self) -> None:
+        self.page(404, "error.html", message="Not found.")
 
-    def guide(self, conn, down: int = 0) -> dict:
+    def guide(self, down: int = 0) -> dict:
         """The guide's context: the file PINKAS_GUIDE names, else the one written in the app's editor."""
         path = self.server.conf.guide
 
         if not path:
-            text = saved_guide(conn)
+            text = saved_guide(self.conn)
             html = render_guide(text, down, breaks=True) if text.strip() else None
 
             return {"html": html, "message": None, "editable": True}
@@ -1057,22 +1057,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         return pages
 
-    def get(self, conn, path: str, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get(self, path: str, query: str) -> None:
         if page := self.get_pages().get(path):
-            return page(conn, query, ctx, cookie)
+            return page(query)
 
         # Split before unquoting, so a name holding "/" (sent as %2F) stays one segment.
         parts = path.split("/")
 
         if len(parts) == 4 and parts[1] == "c":
-            return self.get_character(conn, unquote(parts[2]), unquote(parts[3]), ctx, cookie)
+            return self.get_character(unquote(parts[2]), unquote(parts[3]))
 
-        self.not_found(conn, ctx, cookie)
+        self.not_found()
 
-    def get_index(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get_index(self, query: str) -> None:
         now = datetime.now(UTC)
 
-        with conn, conn.cursor() as cur:
+        with self.conn, self.conn.cursor() as cur:
             rows = fetch(cur, CHARACTERS.where(_c.archived_at.is_(None)).order_by(_c.sort.nulls_last(), _c.name))
             targets = next_targets(cur)
             nerd = nerd_stats(cur)
@@ -1087,28 +1087,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             c["slots"] = slots(c["data"]["bags"], c["data"].get("bag_slots"))
 
         # A recipient that is a listed character by its name, as the mail plan shows it.
-        self.page(conn, 200, "index.html", ctx, cookie, nerd, characters=characters, playing=playing,
+        self.page(200, "index.html", nerd, characters=characters, playing=playing,
                   routes=[(kind, (recipient_of(characters, routes[kind]) or {"name": routes[kind]})["name"])
                           for kind in ROUTE_KINDS if routes.get(kind)],
                   plan=mail_plan(characters, routes),
                   account=account_summary(characters),
                   next_up=next_up(characters), cards=card_keys(characters))
 
-    def get_search(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get_search(self, query: str) -> None:
         q = parse_qs(query).get("q", [""])[0].strip()
         results = None
 
         if q:
-            with conn, conn.cursor() as cur:
+            with self.conn, self.conn.cursor() as cur:
                 results = found(fetch(cur, SEARCH, {"pattern": like_pattern(q)}))
 
-        self.page(conn, 200, "search.html", ctx, cookie, q=q, results=results)
+        self.page(200, "search.html", q=q, results=results)
 
-    def get_stats(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get_stats(self, query: str) -> None:
         now = datetime.now(UTC)
         key = stats.range_key(parse_qs(query).get("range", [None])[0])
 
-        with conn, conn.cursor() as cur:
+        with self.conn, self.conn.cursor() as cur:
             # The charts change with an ingest (a new file), a character's role or name, and the day.
             execute(cur, sa.select(sa.func.max(db.files.c.id)))
             (newest,) = cur.fetchone()
@@ -1124,19 +1124,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
             nerd = nerd_stats(cur)
 
-        self.page(conn, 200, "stats.html", ctx, cookie, nerd, v=view)
+        self.page(200, "stats.html", nerd, v=view)
 
-    def get_guide(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        self.page(conn, 200, "guide.html", ctx, cookie, **self.guide(conn, down=1))
+    def get_guide(self, query: str) -> None:
+        self.page(200, "guide.html", **self.guide(down=1))
 
-    def get_guide_edit(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        self.page(conn, 200, "guide_edit.html", ctx, cookie, text=saved_guide(conn), error=None)
+    def get_guide_edit(self, query: str) -> None:
+        self.page(200, "guide_edit.html", text=saved_guide(self.conn), error=None)
 
-    def get_settings(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get_settings(self, query: str) -> None:
         self.redirect("/settings/game" if self.server.conf.desktop_host else "/settings/routes")
 
-    def get_game(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        with conn, conn.cursor() as cur:
+    def get_game(self, query: str) -> None:
+        with self.conn, self.conn.cursor() as cur:
             execute(cur, ANY_CHARACTER)
             (any_character,) = cur.fetchone()
 
@@ -1144,17 +1144,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         game, addon, files = app.game(), app.addon(), app.files()
         # The first run's checklist, until a character is read; a folder lost later is the missing state instead.
         setup = None if any_character else {"game": game, "addon": addon["installed"]}
-        done = ctx["flash"]
+        done = self.ctx["flash"]
 
         if done and "{v}" in done[1]:
-            ctx["flash"] = (done[0], done[1].format(v=addon["newest"]))
+            self.ctx["flash"] = (done[0], done[1].format(v=addon["newest"]))
 
-        self.page(conn, 200, "settings_game.html", ctx, cookie, tab="game", game=game, files=files,
+        self.page(200, "settings_game.html", tab="game", game=game, files=files,
                   addon=addon, candidates=[] if game else app.candidates(), setup=setup,
                   missing=app.missing())
 
-    def get_routes_form(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        with conn, conn.cursor() as cur:
+    def get_routes_form(self, query: str) -> None:
+        with self.conn, self.conn.cursor() as cur:
             choices = route_choices(cur)
             execute(cur, sa.select(db.routes.c.kind, db.routes.c.character_id))
             picked = dict(cur.fetchall())
@@ -1184,29 +1184,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         for c in choices:
             realms.setdefault(c["realm"], []).append(c)
 
-        self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes", routes=routes,
+        self.page(200, "settings_routes.html", nerd, tab="routes", routes=routes,
                   realms=realms, from_game=from_game and bool(picked))
 
-    def get_routes(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        with conn, conn.cursor() as cur:
+    def get_routes(self, query: str) -> None:
+        with self.conn, self.conn.cursor() as cur:
             nerd = nerd_stats(cur)
 
         routes = nerd["export"].get("routes", {})
 
-        self.page(conn, 200, "settings_routes.html", ctx, cookie, nerd, tab="routes",
+        self.page(200, "settings_routes.html", nerd, tab="routes",
                   routes=[(KIND_LABELS[kind], routes.get(kind)) for kind in ROUTE_KINDS])
 
-    def get_characters(self, conn, query: str, ctx: dict, cookie: tuple[str, str]) -> None:
-        with conn, conn.cursor() as cur:
+    def get_characters(self, query: str) -> None:
+        with self.conn, self.conn.cursor() as cur:
             characters = settings_rows(cur)
 
-        self.page(conn, 200, "settings_characters.html", ctx, cookie, tab="characters",
+        self.page(200, "settings_characters.html", tab="characters",
                   characters=characters, skills=TARGET_SKILLS)
 
-    def get_character(self, conn, realm: str, name: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def get_character(self, realm: str, name: str) -> None:
         now = datetime.now(UTC)
 
-        with conn, conn.cursor() as cur:
+        with self.conn, self.conn.cursor() as cur:
             rows = fetch(cur, CHARACTERS.where(_c.realm == realm, _c.name == name))
             targets = next_targets(cur)
             learned = {p["skill_line"] for p in rows[0]["data"]["professions"]} if rows else set()
@@ -1219,7 +1219,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             history = stats.history(cur, rows[0]["id"], now) if rows else None
 
         if not rows:
-            return self.not_found(conn, ctx, cookie)
+            return self.not_found()
 
         row = summary(rows[0], targets, now)
         data = row["data"]
@@ -1240,7 +1240,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             group["who"] = recipient_of(alts, group["to"]) if group["to"] else None
 
         self.page(
-            conn, 200, "character.html", ctx, cookie, c=row, data=data, planned=planned, **self.guide(conn, down=1),
+            200, "character.html", c=row, data=data, planned=planned, **self.guide(down=1),
             bags=bag_groups, bag_slots=slots(data["bags"], data.get("bag_slots")),
             bank=bank_groups, bank_slots=bank_slots, history=history,
             raw=json.dumps(data, indent=1, ensure_ascii=False, sort_keys=True),
@@ -1259,80 +1259,80 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         return forms
 
-    def post(self, conn, path: str, ctx: dict, cookie: tuple[str, str]) -> None:
+    def post(self, path: str) -> None:
         form = self.read_form()
         handler = self.post_pages().get(path)
 
-        if not same(form.get("t", [""])[0], ctx["token"]):
+        if not same(form.get("t", [""])[0], self.ctx["token"]):
             # The guide's text comes back in the editor: an error page would lose it.
             if handler == self.post_guide:
-                return self.page(conn, 400, "guide_edit.html", ctx, cookie, text=form.get("text", [""])[0],
+                return self.page(400, "guide_edit.html", text=form.get("text", [""])[0],
                                  error="Not saved: the page was open too long. Press Save guide again.")
 
-            return self.page(conn, 400, "error.html", ctx, cookie, message="Stale form: reload and try again.")
+            return self.page(400, "error.html", message="Stale form: reload and try again.")
 
         if handler:
-            return handler(conn, form, ctx, cookie)
+            return handler(form)
 
-        self.not_found(conn, ctx, cookie)
+        self.not_found()
 
-    def post_playing(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+    def post_playing(self, form: dict) -> None:
         chosen = form.get("character", [""])[0]
 
         if chosen == "" or (chosen.isascii() and chosen.isdigit()):
-            if set_playing(conn, int(chosen) if chosen else None):
-                return self.redirect("/", cookie)
+            if set_playing(self.conn, int(chosen) if chosen else None):
+                return self.redirect("/", self.cookie)
 
-        self.page(conn, 400, "error.html", ctx, cookie, message="Unknown character.")
+        self.page(400, "error.html", message="Unknown character.")
 
-    def post_characters(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
-        if save_settings(conn, form):
-            return self.redirect("/settings/characters?done=saved", cookie)
+    def post_characters(self, form: dict) -> None:
+        if save_settings(self.conn, form):
+            return self.redirect("/settings/characters?done=saved", self.cookie)
 
-        self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: a value is out of range.")
+        self.page(400, "error.html", message="Not saved: a value is out of range.")
 
-    def post_guide(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+    def post_guide(self, form: dict) -> None:
         # Postgres can't store a NUL, and one never belongs in notes.
         text = form.get("text", [""])[0].replace("\r\n", "\n").replace("\x00", "")
 
         if len(text.encode()) > GUIDE_LIMIT:
-            return self.page(conn, 413, "guide_edit.html", ctx, cookie, text=text,
+            return self.page(413, "guide_edit.html", text=text,
                              error="Not saved: the guide is over 256 KB. Shorten it, then save again.")
 
-        save_guide(conn, text)
-        self.redirect("/guide?done=guide", cookie)
+        save_guide(self.conn, text)
+        self.redirect("/guide?done=guide", self.cookie)
 
-    def post_game(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
+    def post_game(self, form: dict) -> None:
         app = self.server.app
 
         if "log" in form:
             app.open_log()
 
-            return self.redirect("/settings/game", cookie)
+            return self.redirect("/settings/game", self.cookie)
 
         if "choose" in form:
             outcome = app.choose()
 
-            return self.redirect("/settings/game" + ("" if outcome == "cancelled" else f"?done={outcome}"), cookie)
+            return self.redirect("/settings/game" + ("" if outcome == "cancelled" else f"?done={outcome}"), self.cookie)
 
         pick = form.get("game", [""])[0]
 
         if pick.isascii() and pick.isdigit() and app.use(int(pick)):
-            return self.redirect("/settings/game?done=chosen", cookie)
+            return self.redirect("/settings/game?done=chosen", self.cookie)
 
-        self.page(conn, 400, "error.html", ctx, cookie, message="Unknown game folder.")
+        self.page(400, "error.html", message="Unknown game folder.")
 
-    def post_routes(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
-        if not store_routes(conn, form):
-            return self.page(conn, 400, "error.html", ctx, cookie, message="Not saved: reload the page and try again.")
+    def post_routes(self, form: dict) -> None:
+        if not store_routes(self.conn, form):
+            return self.page(400, "error.html", message="Not saved: reload the page and try again.")
 
-        self.redirect(f"/settings/routes?done={self.server.app.write_routes(read_recipients(conn))}", cookie)
+        self.redirect(f"/settings/routes?done={self.server.app.write_routes(read_recipients(self.conn))}", self.cookie)
 
-    def post_addon(self, conn, form: dict, ctx: dict, cookie: tuple[str, str]) -> None:
-        outcome = self.server.app.install(read_recipients(conn))
+    def post_addon(self, form: dict) -> None:
+        outcome = self.server.app.install(read_recipients(self.conn))
 
         # A folder gone since the page was shown: the page now says it is missing.
-        self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), cookie)
+        self.redirect("/settings/game" + ("" if outcome == "no-game" else f"?done={outcome}"), self.cookie)
 
 
 def saved_guide(conn) -> str:
