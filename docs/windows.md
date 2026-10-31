@@ -1,9 +1,5 @@
 # The Windows app
 
-> **The first version is on its way.** Until a release is on the
-> [Releases](https://github.com/Solarden/pinkas/releases) page, pinkas runs as a
-> [self-hosted](self-hosting.md) server.
-
 For players who don't run a server: one installer, and pinkas runs on the same PC as the game, in its
 own window. No accounts, no passwords, no settings files, and nothing leaves your PC.
 
