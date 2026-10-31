@@ -1,5 +1,6 @@
 """The Windows app's watcher, game folder, lock, log and migrations; the window itself is the spike's."""
 
+import contextlib
 import json
 import re
 import shutil
@@ -144,6 +145,30 @@ def test_one_installed_game_is_saved_and_several_wait_for_a_choice(tmp_path, mon
     assert not app.settings.exists()
     assert [app.use(5), app.use(-1), app.game()] == [False, False, None]
     assert [app.use(1), app.game()] == [True, retail]
+
+
+def test_a_game_outside_the_defaults_is_found_through_the_registry(tmp_path, monkeypatch):
+    retail = game(tmp_path, "_retail_", "WTF")
+
+    def open_key(hive, key, reserved, access):
+        if access & winreg.KEY_WOW64_64KEY:
+            raise FileNotFoundError(key)
+
+        return contextlib.nullcontext(key)
+
+    winreg = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE=0, KEY_READ=1, KEY_WOW64_32KEY=2, KEY_WOW64_64KEY=4, OpenKey=open_key,
+        QueryValueEx=lambda key, name: (str(retail) + "/", 1),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    monkeypatch.setattr(desktop, "GAME_ROOTS", ())
+    app = desktop.App(tmp_path)
+
+    assert app.candidates() == [retail]
+
+    monkeypatch.setattr(desktop, "GAME_ROOTS", (retail.parent,))
+
+    assert app.candidates() == [retail]
 
 
 def test_a_saved_folder_that_is_no_game_is_not_used(tmp_path, monkeypatch):
