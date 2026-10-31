@@ -9,7 +9,9 @@ import math
 from collections import defaultdict
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
-from pinkas import charts
+import sqlalchemy as sa
+
+from pinkas import charts, db
 from pinkas.db import fetch
 from pinkas.parse import KIND_LABELS, KIND_OF, ROUTE_KINDS
 
@@ -30,28 +32,34 @@ DAILY_UP_TO = 365
 CALENDAR_WEEKS = 53
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
-CHARACTERS_SQL = "SELECT id, realm, name, role FROM pinkas_characters ORDER BY id"
+_c, _s = db.characters.c, db.snapshots.c
+CHARACTERS = sa.select(_c.id, _c.realm, _c.name, _c.role).order_by(_c.id)
 # Both ends come from the file and calendar() steps through every day between them: clamped to the strip.
-SESSIONS_SQL = """
-SELECT character_id, greatest(session_started_at, %(since)s) AS started, least(max(logout_at), %(now)s) AS ended
-FROM pinkas_snapshots WHERE logout_at >= %(since)s AND session_started_at IS NOT NULL
-GROUP BY character_id, session_started_at
-"""
-DAILY_SQL = """
-SELECT character_id, logout_at, level, xp, xp_max, money, professions, mats FROM pinkas_snapshots
-WHERE logout_at >= %(since)s ORDER BY logout_at
-"""
+SESSIONS = (
+    sa.select(_s.character_id, sa.func.greatest(_s.session_started_at, sa.bindparam("since")).label("started"),
+              sa.func.least(sa.func.max(_s.logout_at), sa.bindparam("now")).label("ended"))
+    .where(_s.logout_at >= sa.bindparam("since"), _s.session_started_at.is_not(None))
+    .group_by(_s.character_id, _s.session_started_at)
+)
+DAILY = (
+    sa.select(_s.character_id, _s.logout_at, _s.level, _s.xp, _s.xp_max, _s.money, _s.professions, _s.mats)
+    .where(_s.logout_at >= sa.bindparam("since")).order_by(_s.logout_at)
+)
 # The sparklines on a character's page; walks the (character_id, logout_at) index.
-CHARACTER_DAILY_SQL = """
-SELECT character_id, logout_at, level, xp, xp_max, money FROM pinkas_snapshots
-WHERE character_id = %(character)s AND logout_at >= %(since)s ORDER BY logout_at
-"""
-EVENTS_SQL = "SELECT character_id, at, value FROM pinkas_events WHERE kind = %(kind)s AND at >= %(since)s ORDER BY at"
+CHARACTER_DAILY = (
+    sa.select(_s.character_id, _s.logout_at, _s.level, _s.xp, _s.xp_max, _s.money)
+    .where(_s.character_id == sa.bindparam("character"), _s.logout_at >= sa.bindparam("since")).order_by(_s.logout_at)
+)
+EVENTS = (
+    sa.select(db.events.c.character_id, db.events.c.at, db.events.c.value)
+    .where(db.events.c.kind == sa.bindparam("kind"), db.events.c.at >= sa.bindparam("since")).order_by(db.events.c.at)
+)
+_t = db.session_totals.c
 # Without a gather total's spots (up to 50 positions each): no chart reads them.
-TOTALS_SQL = """
-SELECT character_id, key, value - 'spots' AS value FROM pinkas_session_totals
-WHERE kind = %(kind)s AND session_started_at >= %(since)s
-"""
+TOTALS = (
+    sa.select(_t.character_id, _t.key, _t.value.op("-")("spots").label("value"))
+    .where(_t.kind == sa.bindparam("kind"), _t.session_started_at >= sa.bindparam("since"))
+)
 
 
 def amount(value: dict, field: str) -> float:
@@ -76,7 +84,7 @@ def since(key: str, now: datetime) -> datetime:
 def characters(cur) -> dict[int, dict]:
     """Every character, archived too (history stays), with its colour slot by id and the label charts show:
     its name, with the realm when another realm has a character of the same name."""
-    rows = fetch(cur, CHARACTERS_SQL)
+    rows = fetch(cur, CHARACTERS)
     names = [r["name"] for r in rows]
 
     return {
@@ -356,6 +364,14 @@ def combat(totals: list[dict], death_events: list[dict], hours: dict[int, dict[i
         if a_level(e["value"].get("level")):
             died[(e["character_id"], e["value"]["level"])] += 1
 
+    return {
+        "levels": rates_per_level(sums, died, hours),
+        "fights_per_death": {cid: (fights[cid] / died_total[cid] if died_total[cid] else None) for cid in fights},
+    }
+
+
+def rates_per_level(sums: dict[tuple[int, int], dict[str, float]], died: dict[tuple[int, int], int],
+                    hours: dict[int, dict[int, float]]) -> dict[int, dict[int, dict]]:
     per_level: dict[int, dict[int, dict]] = defaultdict(dict)
 
     # Under a second of combat on a level says nothing, and a tiny divisor would overflow the chart.
@@ -368,10 +384,7 @@ def combat(totals: list[dict], death_events: list[dict], hours: dict[int, dict[i
             if h > 0:
                 per_level[cid].setdefault(level, {})["deaths_per_hour"] = died[(cid, level)] / h
 
-    return {
-        "levels": {cid: dict(sorted(v.items())) for cid, v in per_level.items()},
-        "fights_per_death": {cid: (fights[cid] / died_total[cid] if died_total[cid] else None) for cid in fights},
-    }
+    return {cid: dict(sorted(v.items())) for cid, v in per_level.items()}
 
 
 def rested_share(totals: list[dict]) -> dict[int, float | None]:
@@ -428,19 +441,19 @@ def collect(cur, key: str, now: datetime, tz: tzinfo | None = None) -> dict:
     chars = characters(cur)
 
     def events(kind: str) -> list[dict]:
-        return fetch(cur, EVENTS_SQL, {**args, "kind": kind})
+        return fetch(cur, EVENTS, {**args, "kind": kind})
 
     def totals(kind: str) -> list[dict]:
-        return fetch(cur, TOTALS_SQL, {**args, "kind": kind})
+        return fetch(cur, TOTALS, {**args, "kind": kind})
 
-    rows = fetch(cur, DAILY_SQL, args)
+    rows = fetch(cur, DAILY, args)
     weekly = bool(rows) and (now - rows[0]["logout_at"]).days > DAILY_UP_TO
     points = daily(rows, tz, weekly)
     # The pace needs real days: a weekly point is dated to its Monday.
     by_day = daily(rows, tz, False) if weekly else points
     # The account's strip always shows CALENDAR_WEEKS; a character's strip shows the range within them.
     # shortcut: no calendar further back than CALENDAR_WEEKS; an older year would need paging.
-    sessions = fetch(cur, SESSIONS_SQL, {"since": now - timedelta(weeks=CALENDAR_WEEKS), "now": now})
+    sessions = fetch(cur, SESSIONS, {"since": now - timedelta(weeks=CALENDAR_WEEKS), "now": now})
     level_hours = time_per_level(events("level"))
     death_events = events("death")
     # Mail items carry no class: a mailed item id is known from the trade goods seen in the range.
@@ -498,7 +511,7 @@ def grouped(value: float) -> str:
 
 def history(cur, character_id: int, now: datetime, tz: tzinfo | None = None) -> dict:
     """Level and gold over the last SPARK_DAYS days, a point per day, for the character page."""
-    rows = fetch(cur, CHARACTER_DAILY_SQL, {"character": character_id, "since": now - timedelta(days=SPARK_DAYS)})
+    rows = fetch(cur, CHARACTER_DAILY, {"character": character_id, "since": now - timedelta(days=SPARK_DAYS)})
     points = daily(rows, tz, False).get(character_id, [])
     levels = [level_of(p) for p in points if p["level"] is not None]
     golds = [p["money"] / 10000 for p in points if p["money"] is not None]

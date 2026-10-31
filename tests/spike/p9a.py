@@ -588,18 +588,6 @@ def cmd_window(args) -> None:
     window = webview.create_window("pinkas P9a", url, width=900, height=600)
     loaded = threading.Event()
 
-    def probe():
-        started = time.monotonic()
-        if window.events.loaded.wait(args.timeout):
-            loaded.set()
-            note("page_loaded_s", round(time.monotonic() - started, 1))
-        if loaded.is_set() and args.dialog:
-            picked = window.create_file_dialog(webview.FileDialog.FOLDER)
-            note("folder_dialog_returned_a_folder", bool(picked))
-        if args.close_after is not None or not loaded.is_set():
-            time.sleep(args.close_after or 0)
-            window.destroy()
-
     def watchdog():
         if loaded.wait(args.timeout + 30):
             return
@@ -613,7 +601,7 @@ def cmd_window(args) -> None:
     threading.Thread(target=watchdog, daemon=True).start()
     started = time.monotonic()
     try:
-        webview.start(probe, gui="edgechromium" if WINDOWS else None)
+        webview.start(probe, (window, loaded, args), gui="edgechromium" if WINDOWS else None)
         note("webview_start", "returned")
     except Exception as exc:
         note("webview_start", f"raised {type(exc).__name__}")
@@ -627,6 +615,21 @@ def cmd_window(args) -> None:
     if not loaded.is_set() and args.fallback:
         fallback(url)
     server.shutdown()
+
+
+def probe(window, loaded: threading.Event, args) -> None:
+    import webview
+
+    started = time.monotonic()
+    if window.events.loaded.wait(args.timeout):
+        loaded.set()
+        note("page_loaded_s", round(time.monotonic() - started, 1))
+    if loaded.is_set() and args.dialog:
+        picked = window.create_file_dialog(webview.FileDialog.FOLDER)
+        note("folder_dialog_returned_a_folder", bool(picked))
+    if args.close_after is not None or not loaded.is_set():
+        time.sleep(args.close_after or 0)
+        window.destroy()
 
 
 def fallback(url: str) -> None:
