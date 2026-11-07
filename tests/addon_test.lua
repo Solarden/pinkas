@@ -363,6 +363,7 @@ local function makeEnv()
   e.RepairAllItems = function() end
   e.TakeTaxiNode = function() end
   e.SendMail = function() end
+  e.GetQuestReward = function() end
   -- Stand in for Midnight's secret values: the addon must never store one.
   e.issecretvalue = function(v)
     return v == SECRET
@@ -756,6 +757,36 @@ test("money changes take their labels; a hook beats an open frame", function()
   local g = goldBy()
   assert(g.repair.out == 25 and g.vendor["in"] == 28 and g.loot["in"] == 4)
   assert(g.taxi.out == 110 and g.mail.out == 30 and g.other["in"] == 100000)
+end)
+
+test("trainer costs, a quest reward paid before its event and loot paid after the window take their labels", function()
+  newWorld()
+  load(nil)
+  login(true)
+  fire("TRAINER_SHOW")
+  spend(-100)
+  fire("TRAINER_CLOSED")
+  callHooked("GetQuestReward")
+  spend(225)
+  fire("QUEST_TURNED_IN", 815, 700, 225)
+  fire("LOOT_OPENED")
+  fire("LOOT_CLOSED")
+  spend(7)
+  local g = goldBy()
+  assert(g.trainer.out == 100 and g.quest["in"] == 225 and g.loot["in"] == 7 and g.other == nil)
+end)
+
+test("a closed loot window's label doesn't beat a frame opened after it", function()
+  newWorld()
+  load(nil)
+  login(true)
+  fire("LOOT_OPENED")
+  spend(3)
+  fire("LOOT_CLOSED")
+  fire("MERCHANT_SHOW")
+  spend(28)
+  local g = goldBy()
+  assert(g.loot["in"] == 3 and g.vendor["in"] == 28)
 end)
 
 test("a stale hook label expires instead of mislabeling later money", function()

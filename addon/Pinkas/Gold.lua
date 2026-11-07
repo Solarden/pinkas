@@ -49,21 +49,29 @@ local FRAMES = {
   { open = "MAIL_SHOW", close = "MAIL_CLOSED", label = "mail" },
   { open = "TRADE_SHOW", close = "TRADE_CLOSED", label = "trade" },
   { open = "AUCTION_HOUSE_SHOW", close = "AUCTION_HOUSE_CLOSED", label = "auction" },
+  { open = "TRAINER_SHOW", close = "TRAINER_CLOSED", label = "trainer" },
 }
 for _, f in ipairs(FRAMES) do
   ns.on(f.open, function()
     frameLabel = f.label
+    -- A hook label set before this frame opened belongs to something else, e.g. a closed loot window.
+    hookLabel = nil
   end)
   ns.on(f.close, function()
     if frameLabel == f.label then
       frameLabel = nil
+    end
+    -- Looted money can land after LOOT_CLOSED: launch day's totals put most of it under "other".
+    if f.label == "loot" then
+      setHookLabel("loot")
     end
   end)
 end
 
 -- A hook runs at the click, before the server's money change (measured for the repair).
 -- TODO(beta): a flight through TakeTaxiNode; the only flight came before the hook existed.
-local HOOKS = { RepairAllItems = "repair", TakeTaxiNode = "taxi", SendMail = "mail" }
+-- GetQuestReward, not QUEST_TURNED_IN: on launch day some rewards' PLAYER_MONEY came before the event.
+local HOOKS = { RepairAllItems = "repair", TakeTaxiNode = "taxi", SendMail = "mail", GetQuestReward = "quest" }
 for fn, label in pairs(HOOKS) do
   if type(_G[fn]) == "function" then
     hooksecurefunc(fn, function()
@@ -71,8 +79,3 @@ for fn, label in pairs(HOOKS) do
     end)
   end
 end
-
--- TODO(beta): whether QUEST_TURNED_IN comes before the reward's PLAYER_MONEY; both turn-ins paid 0.
-ns.on("QUEST_TURNED_IN", function()
-  setHookLabel("quest")
-end)

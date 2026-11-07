@@ -33,9 +33,9 @@ FILLER = [(20000 + i, f"Made-up Gear Piece of the Owl {i}", 4, 2) for i in range
 ZONES = ("Durotar", "The Barrens", "Stonetalon Mountains", "Ashenvale", "Mulgore")
 KILLERS = ("Razormane Hunter", "Kolkar Wrangler", "Falling", "player", None, "Drowning", "Bristleback Quilboar")
 DUNGEONS = ("Ragefire Chasm", "Wailing Caverns")
-GOLD_SOURCES = ("loot", "vendor", "quest", "trade", "auction", "mail", "repair", "taxi", "other")
+GOLD_SOURCES = ("loot", "vendor", "quest", "trade", "auction", "mail", "repair", "taxi", "trainer", "other")
 # Money in or out by source; the rest go either way.
-GOLD_SIGN = {"loot": 1, "quest": 1, "trade": 1, "repair": -1, "taxi": -1, "mail": -1}
+GOLD_SIGN = {"loot": 1, "quest": 1, "trade": 1, "repair": -1, "taxi": -1, "mail": -1, "trainer": -1}
 # Skill line: the gathering profession and the index in MATS of what it gathers.
 GATHERING = {393: ("skinning", 0), 182: ("herbalism", 3), 186: ("mining", 2)}
 
