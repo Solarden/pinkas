@@ -364,6 +364,13 @@ local function makeEnv()
   e.TakeTaxiNode = function() end
   e.SendMail = function() end
   e.GetQuestReward = function() end
+  local spellNames =
+    { [8613] = "Skinning", [8617] = "Skinning", [2575] = "Mining", [2576] = "Mining", [133] = "Fireball" }
+  e.C_Spell = {
+    GetSpellName = function(id)
+      return spellNames[id]
+    end,
+  }
   -- Stand in for Midnight's secret values: the addon must never store one.
   e.issecretvalue = function(v)
     return v == SECRET
@@ -746,7 +753,7 @@ test("money changes take their labels; a hook beats an open frame", function()
   spend(-25)
   spend(28)
   fire("MERCHANT_CLOSED")
-  fire("LOOT_OPENED")
+  fire("LOOT_READY")
   spend(4)
   fire("LOOT_CLOSED")
   callHooked("TakeTaxiNode")
@@ -769,7 +776,7 @@ test("trainer costs, a quest reward paid before its event and loot paid after th
   callHooked("GetQuestReward")
   spend(225)
   fire("QUEST_TURNED_IN", 815, 700, 225)
-  fire("LOOT_OPENED")
+  fire("LOOT_READY")
   fire("LOOT_CLOSED")
   spend(7)
   local g = goldBy()
@@ -780,7 +787,7 @@ test("a closed loot window's label doesn't beat a frame opened after it", functi
   newWorld()
   load(nil)
   login(true)
-  fire("LOOT_OPENED")
+  fire("LOOT_READY")
   spend(3)
   fire("LOOT_CLOSED")
   fire("MERCHANT_SHOW")
@@ -1109,6 +1116,21 @@ test("only the player's own gathering casts count", function()
     end
   end
   assert(counted == 1, "one skinning cast of the player's, not the party member's, not a fireball")
+end)
+
+test("a gathering spell of a higher rank counts as its profession", function()
+  newWorld()
+  load(nil)
+  login(true)
+  fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-1", 2576)
+  fire("UNIT_SPELLCAST_SUCCEEDED", "player", "cast-2", 8617)
+  local counts = {}
+  for _, row in pairs(env.PinkasDB.chars["Testrealm/Testchar"].totals) do
+    if row.kind == "gather" then
+      counts[row.key] = row.value.count
+    end
+  end
+  assert(counts["mining|Orgrimmar"] == 1 and counts["skinning|Orgrimmar"] == 1)
 end)
 
 -- Size -------------------------------------------------------------------------------------------

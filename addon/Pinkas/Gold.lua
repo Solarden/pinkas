@@ -44,7 +44,8 @@ ns.on("PLAYER_MONEY", function()
 end)
 
 local FRAMES = {
-  { open = "LOOT_OPENED", close = "LOOT_CLOSED", label = "loot" },
+  -- LOOT_READY, not LOOT_OPENED: with fast loot only LOOT_READY fires (measured on Forever by another addon).
+  { open = "LOOT_READY", close = "LOOT_CLOSED", label = "loot" },
   { open = "MERCHANT_SHOW", close = "MERCHANT_CLOSED", label = "vendor" },
   { open = "MAIL_SHOW", close = "MAIL_CLOSED", label = "mail" },
   { open = "TRADE_SHOW", close = "TRADE_CLOSED", label = "trade" },
@@ -61,7 +62,7 @@ for _, f in ipairs(FRAMES) do
     if frameLabel == f.label then
       frameLabel = nil
     end
-    -- Looted money can land after LOOT_CLOSED: launch day's totals put most of it under "other".
+    -- Fast loot closes the window at once, so the looted money can land after LOOT_CLOSED.
     if f.label == "loot" then
       setHookLabel("loot")
     end

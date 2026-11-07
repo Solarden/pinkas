@@ -23,6 +23,7 @@ read_globals = {
   "C_DeathRecap",
   "C_Item",
   "C_Map",
+  "C_Spell",
   "C_Timer",
   "ClearCursor",
   "ClickSendMailItemButton",
