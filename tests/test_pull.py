@@ -49,6 +49,21 @@ def test_asleep_is_quiet_and_not_a_failure(conn, owner, log, closed_port, capsys
     assert log == [] and state(owner) == []
 
 
+@pytest.mark.parametrize(
+    ("asleep_after", "code", "states", "logged"),
+    [(True, 0, [], []), (False, 1, [("source-failed",)], [("error", "source-failed")])],
+    ids=["fell asleep mid-read", "still awake"],
+)
+def test_a_source_failure_is_rechecked_against_the_probe(conn, owner, log, monkeypatch, asleep_after, code, states, logged):
+    answers = iter([False, asleep_after])
+    monkeypatch.setattr(pull, "asleep", lambda probe: next(answers))
+
+    assert pull.run(conn, "false", "piec:22", log) == code
+    assert state(owner) == states
+
+    assert log == logged
+
+
 def test_a_new_file_is_ingested_and_logged_once(conn, owner, log, capsys):
     assert pull.run(conn, GOOD, None, log) == 0
     assert pull.run(conn, GOOD, None, log) == 0

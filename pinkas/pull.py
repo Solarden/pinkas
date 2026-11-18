@@ -37,6 +37,10 @@ class Failure(Exception):
         self.status = status
 
 
+class FellAsleep(Exception):
+    pass
+
+
 def asleep(probe: str) -> bool:
     """No answer on host:port within the timeout: the PC is asleep, which is not a failure."""
     host, _, port = probe.rpartition(":")
@@ -125,7 +129,22 @@ def run(conn, source: str, probe: str | None, log: Callable) -> int:
 
         return 0
 
-    status, _ = store(conn, lambda: fetch(source), log)
+    def read() -> bytes:
+        try:
+            return fetch(source)
+        except Failure as failure:
+            # The PC can fall asleep between the probe and the read, which cuts the read short; that
+            # is not a failure of the source.
+            if failure.status == "source-failed" and probe and asleep(probe):
+                raise FellAsleep from None
+            raise
+
+    try:
+        status, _ = store(conn, read, log)
+    except FellAsleep:
+        print("asleep")
+
+        return 0
 
     return 0 if status == "ok" else 1
 
